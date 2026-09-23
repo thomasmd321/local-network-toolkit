@@ -295,7 +295,7 @@ from the App Store (not "a-Shell mini," which strips out `git`), then either
 `git clone` this repo or grab just the one file you need with `curl`:
 
 ```
-curl -O https://raw.githubusercontent.com/thomasmd321/local-network-toolkit/claude/local-network-device-discovery-joawq5/mobile_network_scanner.py
+curl -O https://raw.githubusercontent.com/thomasmd321/local-network-toolkit/main/mobile_network_scanner.py
 python3 mobile_network_scanner.py
 ```
 

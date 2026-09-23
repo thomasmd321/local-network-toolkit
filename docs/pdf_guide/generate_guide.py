@@ -51,7 +51,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 OUTPUT_PDF = REPO_ROOT / "docs" / "network_scanner_guide.pdf"
 
 REPO_URL = "https://github.com/thomasmd321/local-network-toolkit"
-BRANCH = "claude/local-network-device-discovery-joawq5"
+BRANCH = "main"
 
 
 # =========================================================================
@@ -392,6 +392,11 @@ def build_pdf(desktop_diagram: Path, mobile_diagram: Path, terminal_mockup: Path
         crow("Environment diagnostics", "--doctor", "--doctor"),
         crow("Quiet mode (cron/systemd)", "--quiet", "--quiet"),
         crow("Webhook notifications", "--notify-webhook", "--notify-webhook"),
+        crow("Diff-only watch mode", "--diff-only", "--diff-only"),
+        crow("Config file / profiles", "--profile / --profile-file", "--profile / --profile-file"),
+        crow("Prometheus metrics export", "--metrics-file", "--metrics-file"),
+        crow("Known-devices registry backup", "--export/--import-known-devices", "--export/--import-known-devices"),
+        crow("MQTT / Home Assistant presence", "--mqtt-host (+TLS, availability)", "--mqtt-host (+TLS, availability)"),
         crow("Multi-subnet scanning", "--all-subnets (parallel)", "Manual comma-separated list"),
         crow("Shell tab-completion", "completions.bash", "completions.bash"),
     ]
@@ -421,8 +426,7 @@ def build_pdf(desktop_diagram: Path, mobile_diagram: Path, terminal_mockup: Path
 
     story.append(Paragraph("Clone the whole repository (desktop / Termux)", styles["H2"]))
     story.append(code_block(f"""git clone {REPO_URL}.git
-cd local-network-toolkit
-git checkout {BRANCH}"""))
+cd local-network-toolkit"""))
 
     story.append(Paragraph("Grab a single file directly (no git needed)", styles["H2"]))
     story.append(Paragraph(
