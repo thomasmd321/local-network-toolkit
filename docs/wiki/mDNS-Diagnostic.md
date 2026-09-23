@@ -1,0 +1,27 @@
+# mDNS Diagnostic (`mdns_diagnostic.py`)
+
+Diagnoses whether mDNS multicast actually works from this device/app.
+
+```
+python mdns_diagnostic.py
+```
+
+Run this directly and read the output — it isolates each step (socket
+creation, binding to port 5353, joining the multicast group, sending a
+query, receiving any reply at all) so you can see exactly which layer is
+failing, rather than guessing from "no hostname" alone.
+
+This is the tool that confirmed [[Mobile Network
+Scanner|Mobile-Network-Scanner]]'s iOS limitation: on a-Shell, every mDNS/
+DNS-SD query failed outright with `OSError(65, 'No route to host')` on the
+send itself, pointing at iOS's Local Network Privacy model (apps must
+declare Bonjour service types at the app-bundle level, which a generic
+terminal app running a script typed at runtime can't do) rather than a bug
+in either script. If you hit the same error, this is the tool to confirm
+it's the platform, not your code or network.
+
+## See also
+
+- [[Mobile Network Scanner|Mobile-Network-Scanner]]
+- [[mDNS Browser|mDNS-Browser]]
+- [[Troubleshooting]]

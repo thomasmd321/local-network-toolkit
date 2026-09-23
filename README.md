@@ -15,6 +15,11 @@ to the internet (`upnp_audit.py`), and a live, glanceable dashboard of
 whatever a scanner's `--watch` loop has already found
 (`network_dashboard.py`).
 
+📖 See the [wiki](https://github.com/thomasmd321/local-network-toolkit/wiki)
+for a full reference broken out one page per tool/feature — the same
+content also lives at [`docs/wiki/`](docs/wiki/) (see
+[`docs/wiki/README.md`](docs/wiki/README.md) for how the two stay in sync).
+
 📄 See [`docs/network_scanner_guide.pdf`](docs/network_scanner_guide.pdf) for a
 printable setup/usage guide with pipeline diagrams and a full options
 reference for the two scanner scripts. It's a generated file — see
