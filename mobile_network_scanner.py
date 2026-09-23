@@ -49,10 +49,12 @@ Usage:
 """
 
 import argparse
+import configparser
 import csv
 import ipaddress
 import json
 import os
+import re
 import socket
 import ssl
 import struct
@@ -1601,8 +1603,415 @@ def run_doctor(color: bool = False) -> bool:
     return all_ok
 
 
+# --- --diff-only watch mode: field-level diffing between consecutive ticks ---
+
+def diff_devices(old_devices: List[Device], new_devices: List[Device]) -> Dict[str, list]:
+    """Compare two device lists field-by-field - the same comparison scan_diff.py performs on two saved files.
+
+    Duplicated here (not imported - see this project's README for why
+    every script stays independently self-contained) and adapted for two
+    in-memory device lists from consecutive --watch ticks instead of two
+    files on disk. Devices are matched the same way this script's own
+    registry-based NEW/CHG tracking already does (_device_identity()).
+
+    Args:
+        old_devices: The previous tick's scan results.
+        new_devices: This tick's scan results.
+
+    Returns:
+        {"added": [...], "removed": [...], "changed": [{"key", "ip", "changes": {field: (old, new)}}]},
+        sorted the same way scan_diff.py's own diff_devices() does (a
+        plain string sort on "ip", not an ipaddress-aware one - kept
+        consistent with the function this is modeled on rather than with
+        this script's own table, which does sort IP-aware).
+    """
+    def normalize(device: Device) -> dict:
+        out = dict(device)
+        out["risky_ports"] = sorted(out.get("risky_ports") or [])
+        return out
+
+    old_by_key = {_device_identity(d): normalize(d) for d in old_devices}
+    new_by_key = {_device_identity(d): normalize(d) for d in new_devices}
+
+    added = [new_by_key[key] for key in new_by_key if key not in old_by_key]
+    removed = [old_by_key[key] for key in old_by_key if key not in new_by_key]
+
+    changed = []
+    for key in sorted(set(old_by_key) & set(new_by_key)):
+        old_device, new_device = old_by_key[key], new_by_key[key]
+        # "ip" is excluded here since it's shown as this entry's own
+        # label already, not itemized as a field-level change.
+        fields = sorted((set(old_device) | set(new_device)) - {"ip"})
+        changes = {
+            field: (old_device.get(field), new_device.get(field))
+            for field in fields
+            if old_device.get(field) != new_device.get(field)
+        }
+        if changes:
+            changed.append({"key": key, "ip": new_device.get("ip", old_device.get("ip")), "changes": changes})
+
+    return {
+        "added": sorted(added, key=lambda d: d["ip"]),
+        "removed": sorted(removed, key=lambda d: d["ip"]),
+        "changed": changed,
+    }
+
+
+def _print_diff_only(diff: Dict[str, list], color: bool) -> None:
+    """Print just a --diff-only tick's changes (added/removed/changed devices) instead of the full results table."""
+    if not diff["added"] and not diff["removed"] and not diff["changed"]:
+        print("No changes since the last tick.")
+        return
+    if diff["added"]:
+        print(_colorize(f"{len(diff['added'])} device(s) added:", "green", color))
+        for device in diff["added"]:
+            print(_colorize(f"  {device['ip']:<20}{device.get('hostname') or ''}", "green", color))
+    if diff["removed"]:
+        print(_colorize(f"{len(diff['removed'])} device(s) removed:", "dim", color))
+        for device in diff["removed"]:
+            print(_colorize(f"  {device['ip']:<20}{device.get('hostname') or ''}", "dim", color))
+    if diff["changed"]:
+        print(_colorize(f"{len(diff['changed'])} device(s) changed:", "yellow", color))
+        for entry in diff["changed"]:
+            print(_colorize(f"  {entry['ip']}", "yellow", color))
+            for field, (old_value, new_value) in entry["changes"].items():
+                print(_colorize(f"    {field}: {old_value} -> {new_value}", "yellow", color))
+
+
+# --- Config file / profiles ---
+
+_DEFAULT_PROFILE_PATH = Path.home() / ".mobile_network_scanner.ini"
+
+
+def _load_profile(name: str, path: Path) -> Dict[str, str]:
+    """Load one named [section] from an INI-format profile file as a dict of raw string values.
+
+    Returns:
+        {} if the file doesn't exist, isn't valid INI, or has no section
+        by this name - callers treat that the same as "no profile", not
+        as an error, except main() itself, which does treat an
+        explicitly-requested --profile name not existing as a usage error.
+    """
+    config = configparser.ConfigParser()
+    try:
+        read_ok = config.read(path)
+    except configparser.Error:
+        return {}
+    if not read_ok or not config.has_section(name):
+        return {}
+    return dict(config.items(name))
+
+
+def _apply_profile(parser: argparse.ArgumentParser, profile: Dict[str, str]) -> None:
+    """Coerce a profile's raw string values using each flag's own declared type, then install them as new parser defaults.
+
+    This is the single source of truth this project's own TODO called
+    for when this feature was first proposed: rather than maintaining a
+    second, separately-tracked schema of "what's configurable and what
+    type is it", this reads that straight back out of the parser's own
+    already-declared arguments (via its `_actions` list - a stable, if
+    technically private, argparse attribute long relied on in the wild
+    for exactly this kind of introspection). A profile key that doesn't
+    match any flag (e.g. one written for an older version of this script,
+    before a flag was renamed) is silently ignored rather than erroring.
+    A repeatable flag (--set-label, --remove-label; action="append") is
+    also skipped - a profile can't meaningfully seed a growing list this
+    way, so it's left at its own empty-list default instead of being
+    silently replaced by one raw string.
+
+    Explicit CLI flags still win: set_defaults() only changes what
+    parse_args() falls back to when a flag isn't given on the command
+    line at all.
+    """
+    dest_to_action = {action.dest: action for action in parser._actions if action.dest and action.dest != argparse.SUPPRESS}
+
+    coerced: Dict[str, object] = {}
+    for key, raw_value in profile.items():
+        dest = key.replace("-", "_")
+        action = dest_to_action.get(dest)
+        if action is None or isinstance(action, argparse._AppendAction):
+            continue
+        if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+            coerced[dest] = raw_value.strip().lower() in ("1", "true", "yes", "on")
+        elif action.type is not None:
+            coerced[dest] = action.type(raw_value)
+        else:
+            coerced[dest] = raw_value
+
+    parser.set_defaults(**coerced)
+
+
+# --- Prometheus textfile export ---
+
+def render_prometheus_metrics(device_count: int, new_count: int, risky_count: int, timestamp: float) -> str:
+    """Render this scan's summary counts in Prometheus text exposition format, for node_exporter's textfile collector.
+
+    No IP-conflict metric here, unlike network_scanner.py's own version
+    of this function: this script has no MAC to compare against at all
+    (see _device_identity()'s own docstring), so there's no equivalent
+    check to report a count for.
+
+    Args:
+        timestamp: Unix timestamp of this scan, typically time.time().
+
+    Returns:
+        Complete file content, each metric preceded by its own HELP/TYPE
+        comment lines per the exposition format - ready to write as-is.
+    """
+    lines = [
+        "# HELP mobile_network_scanner_devices_total Devices found in the most recent scan.",
+        "# TYPE mobile_network_scanner_devices_total gauge",
+        f"mobile_network_scanner_devices_total {device_count}",
+        "# HELP mobile_network_scanner_devices_new_total Newly-seen devices in the most recent scan.",
+        "# TYPE mobile_network_scanner_devices_new_total gauge",
+        f"mobile_network_scanner_devices_new_total {new_count}",
+        "# HELP mobile_network_scanner_devices_risky_total Devices exposing a risky port in the most recent scan.",
+        "# TYPE mobile_network_scanner_devices_risky_total gauge",
+        f"mobile_network_scanner_devices_risky_total {risky_count}",
+        "# HELP mobile_network_scanner_last_scan_timestamp_seconds Unix timestamp of the most recent scan.",
+        "# TYPE mobile_network_scanner_last_scan_timestamp_seconds gauge",
+        f"mobile_network_scanner_last_scan_timestamp_seconds {timestamp}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def write_prometheus_metrics(path: Path, device_count: int, new_count: int, risky_count: int, timestamp: float) -> None:
+    """Write render_prometheus_metrics()'s output to path, atomically.
+
+    Writes to a temporary file in the same directory first, then
+    os.replace()s it into place - node_exporter's textfile collector
+    polls this directory on its own schedule, independent of this
+    script's own run, and would otherwise have a real chance of reading a
+    half-written file mid-write. A failed write (unwritable directory,
+    full disk) is swallowed, the same convention every other export/log
+    flag in this script already follows.
+    """
+    content = render_prometheus_metrics(device_count, new_count, risky_count, timestamp)
+    tmp_path = path.with_name(path.name + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path.write_text(content, encoding="utf-8")
+        os.replace(tmp_path, path)
+    except OSError:
+        pass
+
+
+# --- Known-devices registry export/import ---
+
+def export_known_devices(path: Path, known_devices_path: Path = _KNOWN_DEVICES_PATH) -> int:
+    """Copy the known-devices registry to path, for backing it up or moving it to a new machine.
+
+    It's already a plain, portable JSON file - see this project's own
+    TODO note that a dedicated export format probably wasn't needed - so
+    this is little more than a documented, discoverable copy. Written the
+    same way _save_known_devices() writes the registry itself
+    (indent=2, sort_keys=True), so the exported file is diff-friendly too.
+
+    Returns:
+        The number of entries exported.
+    """
+    known = _load_known_devices(known_devices_path)
+    path.write_text(json.dumps(known, indent=2, sort_keys=True), encoding="utf-8")
+    return len(known)
+
+
+def import_known_devices(path: Path, known_devices_path: Path = _KNOWN_DEVICES_PATH) -> int:
+    """Merge path's registry entries into the current known-devices registry.
+
+    Imported entries take precedence on a key collision - a deliberate
+    "restore from backup" semantic, not a symmetric merge - so importing
+    onto an empty registry (a fresh machine) is a full restore, and
+    importing onto one that already has some entries still lets the
+    backup win for anything both sides know about.
+
+    Returns:
+        The number of entries imported (0 if path has none, or doesn't
+        parse as a known-devices registry at all - see _load_known_devices()).
+    """
+    incoming = _load_known_devices(path)
+    if not incoming:
+        return 0
+    current = _load_known_devices(known_devices_path)
+    current.update(incoming)
+    _save_known_devices(current, known_devices_path)
+    return len(incoming)
+
+
+# --- MQTT / Home Assistant presence publishing ---
+#
+# A from-scratch, publish-only MQTT 3.1.1 client over a plain TCP socket
+# (stdlib only) - the same "implement the wire protocol yourself rather
+# than add a dependency" approach this project already takes for DHCP
+# (dhcp_monitor.py), DNS (dns_check.py), and UPnP/SOAP (upnp_audit.py).
+# Publish-only: there's no subscribe/receive path at all, since a
+# presence sensor only ever pushes its own state, and staying at QoS 0
+# (fire-and-forget) needs no packet-identifier bookkeeping or ack
+# handling to implement - an acceptable trade for a value that's about
+# to be republished again next scan anyway.
+
+_MQTT_TOPIC_SAFE_PATTERN = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _mqtt_encode_remaining_length(length: int) -> bytes:
+    """Encode an MQTT fixed-header "remaining length" field: a base-128 varint, up to 4 bytes (max 268435455)."""
+    if length < 0 or length > 268435455:
+        raise ValueError(f"MQTT remaining length out of range: {length}")
+    encoded = bytearray()
+    while True:
+        byte = length % 128
+        length //= 128
+        if length > 0:
+            byte |= 0x80
+        encoded.append(byte)
+        if length == 0:
+            break
+    return bytes(encoded)
+
+
+def _mqtt_encode_string(value: str) -> bytes:
+    """Encode an MQTT "UTF-8 string" field: a 2-byte big-endian length prefix followed by the encoded bytes."""
+    data = value.encode("utf-8")
+    return struct.pack(">H", len(data)) + data
+
+
+def _mqtt_connect_packet(client_id: str, username: Optional[str] = None, password: Optional[str] = None, keepalive: int = 60) -> bytes:
+    """Build an MQTT CONNECT packet (protocol level 4, i.e. MQTT 3.1.1), clean-session, no will message."""
+    protocol_name = _mqtt_encode_string("MQTT")
+    protocol_level = bytes([4])
+    connect_flags = 0x02  # Clean Session
+    if username is not None:
+        connect_flags |= 0x80
+    if password is not None:
+        connect_flags |= 0x40
+    variable_header = protocol_name + protocol_level + bytes([connect_flags]) + struct.pack(">H", keepalive)
+    payload = _mqtt_encode_string(client_id)
+    if username is not None:
+        payload += _mqtt_encode_string(username)
+    if password is not None:
+        payload += _mqtt_encode_string(password)
+    body = variable_header + payload
+    return bytes([0x10]) + _mqtt_encode_remaining_length(len(body)) + body
+
+
+def _mqtt_publish_packet(topic: str, payload: bytes, retain: bool = False) -> bytes:
+    """Build an MQTT PUBLISH packet at QoS 0."""
+    flags = 0x30 | (0x01 if retain else 0x00)
+    body = _mqtt_encode_string(topic) + payload
+    return bytes([flags]) + _mqtt_encode_remaining_length(len(body)) + body
+
+
+_MQTT_DISCONNECT_PACKET = bytes([0xE0, 0x00])
+
+
+def publish_mqtt(
+    host: str,
+    port: int,
+    client_id: str,
+    publishes: List[Tuple[str, bytes, bool]],
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    timeout: float = 5.0,
+) -> None:
+    """Open one MQTT connection, publish every (topic, payload, retain) tuple at QoS 0, then disconnect.
+
+    Args:
+        publishes: (topic, payload, retain) tuples, sent in order on one
+            connection - see build_ha_presence_publishes()/
+            build_ha_absence_publishes().
+
+    Raises:
+        RuntimeError: the broker's CONNACK reported anything other than
+            success (bad protocol version, bad credentials, not
+            authorized, etc. - see MQTT 3.1.1 spec S3.2.2.3 for the full
+            code list; this doesn't decode which one, just that it failed).
+        OSError: the TCP connection itself failed (unreachable host,
+            connection refused, timeout).
+    """
+    with socket.create_connection((host, port), timeout=timeout) as sock:
+        sock.sendall(_mqtt_connect_packet(client_id, username, password))
+        connack = sock.recv(4)
+        if len(connack) < 4 or connack[0] != 0x20 or connack[3] != 0x00:
+            raise RuntimeError(f"MQTT broker rejected the connection (CONNACK: {connack!r})")
+        for topic, payload, retain in publishes:
+            sock.sendall(_mqtt_publish_packet(topic, payload, retain))
+        sock.sendall(_MQTT_DISCONNECT_PACKET)
+
+
+def _mqtt_safe_id(key: str) -> str:
+    """Turn a device identity (this script's is always a bare IP) into an MQTT-topic-safe, Home-Assistant-unique-id-safe token."""
+    return _MQTT_TOPIC_SAFE_PATTERN.sub("_", key)
+
+
+def build_ha_presence_publishes(
+    devices: List[Device], discovery_prefix: str = "homeassistant", node_id: str = "mobile_network_scanner"
+) -> List[Tuple[str, bytes, bool]]:
+    """Build Home Assistant MQTT Discovery config + ON-state publishes for every device in this scan.
+
+    Each device becomes one `binary_sensor` entity with device_class
+    "presence" - Home Assistant creates/updates it automatically the
+    first time its config topic is published (MQTT Discovery), no manual
+    YAML entity configuration needed on the Home Assistant side. Every
+    publish is retained, so a restarted broker/Home Assistant still shows
+    the last known state instead of "unavailable".
+
+    A device that stops appearing in later scans simply stops being
+    republished here - it does *not* get marked absent on its own. Pair
+    this with build_ha_absence_publishes() and _find_missing_devices()'s
+    own report, at the call site, to actively mark a dropped-off device
+    away rather than leaving Home Assistant showing its stale last state.
+    """
+    publishes: List[Tuple[str, bytes, bool]] = []
+    for device in devices:
+        safe_id = _mqtt_safe_id(_device_identity(device))
+        unique_id = f"{node_id}_{safe_id}"
+        name = device.get("hostname") or device.get("label") or device["ip"]
+        state_topic = f"{discovery_prefix}/binary_sensor/{unique_id}/state"
+        config_topic = f"{discovery_prefix}/binary_sensor/{unique_id}/config"
+        config_payload = json.dumps({
+            "name": f"{name} presence",
+            "unique_id": unique_id,
+            "state_topic": state_topic,
+            "payload_on": "ON",
+            "payload_off": "OFF",
+            "device_class": "presence",
+        }).encode("utf-8")
+        publishes.append((config_topic, config_payload, True))
+        publishes.append((state_topic, b"ON", True))
+    return publishes
+
+
+def build_ha_absence_publishes(
+    missing_devices: List[dict], discovery_prefix: str = "homeassistant", node_id: str = "mobile_network_scanner"
+) -> List[Tuple[str, bytes, bool]]:
+    """Build OFF-state publishes for devices _find_missing_devices() reports as no longer seen.
+
+    Only the state topic is republished (OFF) - the config topic doesn't
+    need resending, since Home Assistant already has the entity
+    registered from whenever the device was last actually present.
+    """
+    publishes: List[Tuple[str, bytes, bool]] = []
+    for entry in missing_devices:
+        safe_id = _mqtt_safe_id(entry["key"])
+        unique_id = f"{node_id}_{safe_id}"
+        state_topic = f"{discovery_prefix}/binary_sensor/{unique_id}/state"
+        publishes.append((state_topic, b"OFF", True))
+    return publishes
+
+
 def main() -> None:
     """CLI entry point: parse arguments, run the scan, and print a results table."""
+    # A small pre-parser for just --profile/--profile-file, so their
+    # values are available before the real parser's parse_args() call -
+    # _apply_profile() has to run (and install its coerced values as new
+    # defaults) before that call, not after, for a profile's values to
+    # actually take effect as fallbacks. add_help=False keeps this from
+    # answering --help itself; the real parser below declares these same
+    # two flags again so they show up in --help normally.
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--profile", type=str, default=None)
+    pre_parser.add_argument("--profile-file", type=str, default=str(_DEFAULT_PROFILE_PATH))
+    pre_args, _ = pre_parser.parse_known_args()
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "subnet",
@@ -1713,6 +2122,72 @@ def main() -> None:
         default=_DEFAULT_HISTORY_MAX_ENTRIES,
         help=f"How many scans to keep in --log-history's log before dropping the oldest (default: {_DEFAULT_HISTORY_MAX_ENTRIES})",
     )
+    parser.add_argument(
+        "--diff-only",
+        action="store_true",
+        help="Under --watch, print only what changed since the previous tick instead of the full table every time - see diff_devices()",
+    )
+    parser.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help=f"Load defaults from this named [section] in --profile-file (default: {_DEFAULT_PROFILE_PATH}) - explicit flags on the command line still override",
+    )
+    parser.add_argument(
+        "--profile-file",
+        type=str,
+        default=str(_DEFAULT_PROFILE_PATH),
+        metavar="FILE",
+        help="INI file --profile reads its named section from",
+    )
+    parser.add_argument(
+        "--metrics-file",
+        type=str,
+        default=None,
+        metavar="FILE",
+        help="Write this scan's device/new/risky counts to FILE in Prometheus text exposition format, for node_exporter's textfile collector - see write_prometheus_metrics()",
+    )
+    parser.add_argument(
+        "--export-known-devices",
+        type=str,
+        default=None,
+        metavar="FILE",
+        help="Copy the known-devices registry to FILE (for backing it up or moving it to a new machine) and exit without scanning - see export_known_devices()",
+    )
+    parser.add_argument(
+        "--import-known-devices",
+        type=str,
+        default=None,
+        metavar="FILE",
+        help="Merge FILE's known-devices registry into the current one (imported entries win on a collision) and exit without scanning - see import_known_devices()",
+    )
+    parser.add_argument(
+        "--mqtt-host",
+        type=str,
+        default=None,
+        metavar="HOST",
+        help="Publish Home Assistant MQTT Discovery presence for every device found to this broker - see build_ha_presence_publishes()",
+    )
+    parser.add_argument("--mqtt-port", type=int, default=1883, help="MQTT broker port (default: 1883)")
+    parser.add_argument("--mqtt-username", type=str, default=None, help="MQTT broker username, if required")
+    parser.add_argument("--mqtt-password", type=str, default=None, help="MQTT broker password, if required")
+    parser.add_argument(
+        "--mqtt-client-id", type=str, default="mobile_network_scanner", help="MQTT client ID (default: mobile_network_scanner)"
+    )
+    parser.add_argument(
+        "--mqtt-discovery-prefix",
+        type=str,
+        default="homeassistant",
+        help="Home Assistant's MQTT Discovery topic prefix (default: homeassistant)",
+    )
+
+    if pre_args.profile:
+        profile = _load_profile(pre_args.profile, Path(pre_args.profile_file))
+        if not profile:
+            parser.error(f"--profile {pre_args.profile!r} not found in {pre_args.profile_file}")
+        _apply_profile(parser, profile)
+
     args = parser.parse_args()
 
     color = _use_color(args.no_color)
@@ -1724,6 +2199,16 @@ def main() -> None:
     if args.doctor:
         ok = run_doctor(color=color)
         raise SystemExit(0 if ok else 1)
+
+    if args.export_known_devices:
+        count = export_known_devices(Path(args.export_known_devices), known_devices_path=_KNOWN_DEVICES_PATH)
+        print(f"Exported {count} known device(s) to {args.export_known_devices}.")
+        raise SystemExit(0)
+
+    if args.import_known_devices:
+        count = import_known_devices(Path(args.import_known_devices), known_devices_path=_KNOWN_DEVICES_PATH)
+        print(f"Imported {count} known device(s) from {args.import_known_devices}.")
+        raise SystemExit(0)
 
     # If the user didn't pass a subnet, auto-detect it from the device's
     # own network configuration instead of forcing them to look it up.
@@ -1747,8 +2232,17 @@ def main() -> None:
     for key in args.remove_label:
         _remove_label(key, known_devices_path=_KNOWN_DEVICES_PATH)
 
+    # --diff-only's baseline: the previous tick's device list, or None
+    # before the first tick has run at all (in which case there's
+    # nothing yet to diff against, so run_once() falls back to printing
+    # the full table that once). Declared here, one level up from
+    # run_once(), so the closure below can update it across calls via
+    # `nonlocal` - a --watch loop otherwise carries no state between ticks.
+    previous_tick_devices: Optional[List[Device]] = None
+
     def run_once() -> None:
         """Scan once, mark/print NEW devices, and print the results table."""
+        nonlocal previous_tick_devices
         if not args.quiet:
             print(f"Scanning {', '.join(subnets)} on ports {ports} ...")
 
@@ -1763,12 +2257,22 @@ def main() -> None:
             retries=args.retries,
         )
 
+        # Captured before being overwritten, and updated unconditionally
+        # (even on an empty scan, even under --quiet) so that whichever
+        # tick --diff-only's *next* call compares against is always the
+        # immediately-preceding one - not a stale snapshot from several
+        # ticks ago because an intervening tick returned early below.
+        diff_baseline = previous_tick_devices
+        previous_tick_devices = devices
+
         if args.log_history:
             append_scan_history(devices, Path(args.log_history), max_entries=args.history_max_entries)
 
         if not devices:
             if not args.quiet:
                 print("No devices found.")
+            if args.metrics_file:
+                write_prometheus_metrics(Path(args.metrics_file), 0, 0, 0, time.time())
             return
 
         # known_devices_path is passed explicitly (rather than relying
@@ -1801,10 +2305,45 @@ def main() -> None:
             if message:
                 send_webhook_notification(args.notify_webhook, message)
 
+        # Metrics and MQTT presence are unconditional of --quiet/has_signal,
+        # unlike the webhook above: a monitoring dashboard or a Home
+        # Assistant presence sensor wants every tick's current state
+        # ("0 new devices" is itself meaningful data), not just the
+        # interesting ones --notify-webhook is about flagging.
+        if args.metrics_file:
+            new_count_for_metrics = sum(1 for v in is_new.values() if v)
+            write_prometheus_metrics(
+                Path(args.metrics_file), len(devices), new_count_for_metrics, len(risky_devices), time.time()
+            )
+
+        if args.mqtt_host:
+            try:
+                mqtt_publishes = build_ha_presence_publishes(devices, args.mqtt_discovery_prefix, args.mqtt_client_id)
+                mqtt_publishes += build_ha_absence_publishes(missing, args.mqtt_discovery_prefix, args.mqtt_client_id)
+                publish_mqtt(
+                    args.mqtt_host, args.mqtt_port, args.mqtt_client_id, mqtt_publishes,
+                    username=args.mqtt_username, password=args.mqtt_password,
+                )
+            except (OSError, RuntimeError) as exc:
+                print(f"Warning: MQTT publish failed: {exc}", file=sys.stderr)
+
         if args.quiet and not has_signal:
             # Nothing worth reporting this run - true silence, not even
             # the table header, so a cron/systemd job produces zero
             # output on a boring scan instead of a full report every time.
+            return
+
+        if args.diff_only and diff_baseline is not None:
+            # A short-circuit around the entire table/summary/detail-
+            # section block below: diff_devices()'s added/removed/changed
+            # output already conveys the same information, just unified
+            # into one comparison instead of several separate registry-
+            # based ones - see diff_devices()'s own docstring.
+            diff = diff_devices(diff_baseline, devices)
+            _print_diff_only(diff, color)
+            if args.output:
+                export_results(devices, Path(args.output))
+                print(f"\nWrote {len(devices)} device(s) to {args.output}.")
             return
 
         # A leading marker column (rather than reflowing every other

@@ -492,6 +492,18 @@ python3 network_scanner.py --output scan.json  # save results to a file"""))
         ("--history-max-entries N", "Cap FILE from --log-history at N lines, dropping the oldest first (default: 200)."),
         ("--quiet", "Print nothing for a scan with no NEW/CHG/missing/risky devices - only an interesting run produces output (see --watch under cron/systemd)."),
         ("--notify-webhook URL", "POST a summary to URL as Slack-compatible JSON whenever a scan has something to report - same trigger as --quiet."),
+        ("--diff-only", "Under --watch, print only what changed since the previous tick instead of the full table every time."),
+        ("--profile NAME", "Load defaults from this named section in --profile-file (default: ~/.network_scanner.ini) - explicit flags still override."),
+        ("--profile-file FILE", "INI file --profile reads its named section from."),
+        ("--metrics-file FILE", "Write this scan's device/new/risky/conflict counts to FILE in Prometheus text exposition format, for node_exporter's textfile collector."),
+        ("--export-known-devices FILE", "Copy the known-devices registry to FILE and exit without scanning."),
+        ("--import-known-devices FILE", "Merge FILE's known-devices registry into the current one (imported entries win on a collision) and exit without scanning."),
+        ("--mqtt-host HOST", "Publish Home Assistant MQTT Discovery presence for every device found to this broker."),
+        ("--mqtt-port PORT", "MQTT broker port (default: 1883)."),
+        ("--mqtt-username USER", "MQTT broker username, if required."),
+        ("--mqtt-password PASS", "MQTT broker password, if required."),
+        ("--mqtt-client-id ID", "MQTT client ID (default: network_scanner)."),
+        ("--mqtt-discovery-prefix PREFIX", "Home Assistant's MQTT Discovery topic prefix (default: homeassistant)."),
     ]
     story.append(options_table(desktop_flags))
 
@@ -538,6 +550,18 @@ python3 mobile_network_scanner.py --output scan.csv  # save results to a file"""
         ("--history-max-entries N", "Cap FILE from --log-history at N lines, dropping the oldest first (default: 200)."),
         ("--quiet", "Print nothing for a scan with no NEW/CHG/missing/risky devices - only an interesting run produces output (see --watch under cron/systemd)."),
         ("--notify-webhook URL", "POST a summary to URL as Slack-compatible JSON whenever a scan has something to report - same trigger as --quiet."),
+        ("--diff-only", "Under --watch, print only what changed since the previous tick instead of the full table every time."),
+        ("--profile NAME", "Load defaults from this named section in --profile-file (default: ~/.mobile_network_scanner.ini) - explicit flags still override."),
+        ("--profile-file FILE", "INI file --profile reads its named section from."),
+        ("--metrics-file FILE", "Write this scan's device/new/risky counts to FILE in Prometheus text exposition format, for node_exporter's textfile collector."),
+        ("--export-known-devices FILE", "Copy the known-devices registry to FILE and exit without scanning."),
+        ("--import-known-devices FILE", "Merge FILE's known-devices registry into the current one (imported entries win on a collision) and exit without scanning."),
+        ("--mqtt-host HOST", "Publish Home Assistant MQTT Discovery presence for every device found to this broker."),
+        ("--mqtt-port PORT", "MQTT broker port (default: 1883)."),
+        ("--mqtt-username USER", "MQTT broker username, if required."),
+        ("--mqtt-password PASS", "MQTT broker password, if required."),
+        ("--mqtt-client-id ID", "MQTT client ID (default: mobile_network_scanner)."),
+        ("--mqtt-discovery-prefix PREFIX", "Home Assistant's MQTT Discovery topic prefix (default: homeassistant)."),
     ]
     story.append(options_table(mobile_flags))
 
@@ -815,7 +839,7 @@ python3 mobile_network_scanner.py --log-history history.jsonl"""))
     # ------------------------------------------------------------ Shell completion
     story.append(Paragraph("11. Shell tab-completion", styles["H1"]))
     story.append(Paragraph(
-        "completions.bash adds bash tab-completion for each script's flag names (18+ per script "
+        "completions.bash adds bash tab-completion for each script's flag names (30+ per script "
         "by now, easy to half-remember). Source it from your ~/.bashrc:", styles["Body"]))
     story.append(code_block("source /path/to/local-network-toolkit/completions.bash"))
     story.append(Paragraph(

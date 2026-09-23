@@ -195,15 +195,33 @@ Ideas discussed but not yet implemented, for `network_scanner.py` and
       of an unchanged device produces zero false positives, and that
       `--quiet` stays fully silent on that unchanged rescan.
 
-- [ ] **`--diff-only` watch mode.** Instead of reprinting the full results
+- [x] **`--diff-only` watch mode.** Instead of reprinting the full results
       table on every `--watch` tick, print just what changed since the
       previous tick - reusing `scan_diff.py`'s comparison logic against
       the last entry in the scan history log (see "Scan history log"
       above) rather than the full table every time. Complements `--quiet`
       (which suppresses a *boring* tick entirely) by making an
       *interesting* tick's output shorter too.
+      Done: `diff_devices()`/`_print_diff_only()` in both scripts, plus
+      `--diff-only`. Compares two in-memory device lists from consecutive
+      `--watch` ticks instead of `scan_diff.py`'s own two-files-on-disk
+      case - duplicated and adapted from that function rather than
+      imported (this project's usual "stay self-contained" rule), matched
+      the same way each script's own registry-based NEW/CHG tracking
+      already does (`_device_identity()`). State is threaded across ticks
+      via a `previous_tick_devices` variable declared one scope above the
+      `run_once()` closure inside `main()` and updated through `nonlocal`,
+      unconditionally and *before* any early return (an empty scan, a
+      `--quiet`-suppressed tick) so the next tick's baseline is always the
+      immediately-preceding one, never a stale snapshot from several ticks
+      back. On the very first tick, with no baseline yet, falls back to
+      the ordinary full table. Verified end-to-end through the real
+      `main()` CLI path on both scripts: a two-tick `--watch` run (the
+      scan function mocked, everything else - arg parsing, the registry,
+      `diff_devices()`, printing - real) correctly printed the full table
+      on tick one and only the changed field on tick two.
 
-- [ ] **Config file / profiles.** With 20+ flags per script now, a saved
+- [x] **Config file / profiles.** With 20+ flags per script now, a saved
       profile (e.g. `--profile home`, reading from
       `~/.network_scanner.toml` or similar) would beat retyping a long
       `--exclude ... --ports ... --log-history ...` combination every
@@ -212,6 +230,31 @@ Ideas discussed but not yet implemented, for `network_scanner.py` and
       to keep argparse's own defaults/help text as the single source of
       truth for what's configurable, rather than drifting out of sync
       with a second, separately-maintained schema.
+      Done: `_load_profile()`/`_apply_profile()` in both scripts, plus
+      `--profile NAME` and `--profile-file FILE` (default
+      `~/.network_scanner.ini`/`~/.mobile_network_scanner.ini`). INI, not
+      TOML as first suggested - `tomllib` is Python 3.11+ only and this
+      project's own CI matrix goes back to 3.9, while `configparser` is
+      stdlib everywhere it needs to run. `_apply_profile()` satisfies this
+      item's own stated concern directly: rather than a second,
+      separately-tracked schema of what's configurable and its type, it
+      reads that straight back out of the parser's own already-declared
+      arguments (`parser._actions` - a stable, if technically private,
+      argparse attribute), coercing each profile value using that flag's
+      own declared type. A small pre-parser (`add_help=False`) reads just
+      `--profile`/`--profile-file` before the real parser's
+      `parse_args()` call, so the coerced values can be installed as new
+      defaults (`parser.set_defaults(**coerced)`) beforehand - `set_defaults()`
+      only changes what a flag falls back to when it isn't given on the
+      command line at all, so an explicit CLI flag still overrides the
+      profile automatically, no extra precedence logic needed. A
+      repeatable flag (`--set-label`, `--remove-label`) is skipped rather
+      than seeded from one raw string; an unrecognized profile key is
+      silently ignored. Verified with real profile files on disk (not
+      just parsed dicts): type coercion for float/bool/string flags,
+      explicit-CLI-overrides-profile precedence, and an unknown
+      `--profile` name correctly surfacing as an `argparse` usage error
+      (exit code 2) - all exercised through the real `main()` CLI path.
 
 - [x] **`--retries N`.** A single dropped ARP/ping reply (or one flaky TCP
       connect on the mobile script) currently makes a live device look
@@ -245,15 +288,37 @@ Ideas discussed but not yet implemented, for `network_scanner.py` and
       it as missing with the default of 0 retries - confirmed by call-count
       assertions on the underlying (unmocked report/registry) scan path.
 
-- [ ] **Prometheus textfile export (`--metrics-file`).** Write scan counts
+- [x] **Prometheus textfile export (`--metrics-file`).** Write scan counts
       (device count, new count, risky count, IP-conflict count) in
       Prometheus exposition format to a file, so `node_exporter`'s
       textfile collector can pick it up - turns any `--watch` box into a
       Grafana-graphable metric with no new runtime dependency. Reuses the
       same data the scan history log and webhook notification already
       compute; mostly a matter of formatting it differently.
+      Done: `render_prometheus_metrics()`/`write_prometheus_metrics()` in
+      both scripts, plus `--metrics-file FILE`. `network_scanner.py`'s
+      version includes a `network_scanner_ip_conflicts_total` gauge
+      (omitted entirely, not just zeroed, when the conflict count is
+      `None`); `mobile_network_scanner.py`'s has no equivalent metric at
+      all, since it has no MAC to compare against and so no IP-conflict
+      check to report a count for (same limitation its own
+      `_device_identity()` docstring already states). Written atomically
+      - a temp file in the same directory, then `os.replace()`'d into
+      place - since `node_exporter`'s textfile collector polls this
+      directory on its own independent schedule and would otherwise have
+      a real chance of reading a half-written file mid-write. Unlike
+      `--notify-webhook` (which only fires on a NEW/CHG/missing/risky
+      signal), the metrics write is unconditional of `--quiet`/that
+      signal - a monitoring dashboard wants every tick's current state,
+      including "0 new devices," not just the interesting ticks. A failed
+      write (unwritable directory, full disk) is swallowed, the same
+      convention every other export/log flag here already follows.
+      Verified against real files on disk on both scripts: content after
+      a real scan, correctly zeroed content after an empty scan, no
+      leftover `.tmp` file after a normal write, parent directories
+      created as needed, and no crash when the write itself fails.
 
-- [ ] **Known-devices registry export/import.** A way to back up or move
+- [x] **Known-devices registry export/import.** A way to back up or move
       `~/.cache/network_scanner_known_devices.json` (and its
       `mobile_network_scanner.py` equivalent) to a new machine, since
       labeling effort (see "Custom device labels/aliases") currently
@@ -261,6 +326,25 @@ Ideas discussed but not yet implemented, for `network_scanner.py` and
       is probably just documenting "it's a plain JSON file, copy it" -
       worth checking whether that's actually enough before building
       dedicated import/export flags around it.
+      Done: this item's own hedge turned out right - the registry already
+      was a plain, portable JSON file, so `export_known_devices()` is
+      little more than a documented, discoverable copy (formatted the
+      same way `_save_known_devices()` writes the registry itself -
+      `indent=2, sort_keys=True` - so the export stays diff-friendly
+      too), and `import_known_devices()` a `dict.update()` merge. Built
+      dedicated flags anyway rather than stopping at "just copy the
+      file": `--export-known-devices FILE`/`--import-known-devices FILE`
+      in both scripts, each an early exit (`SystemExit(0)`) before any
+      scan. Import uses a deliberate "restore from backup," not a
+      symmetric merge - an imported entry wins on a key collision, so
+      importing onto an empty registry (a fresh machine) is a full
+      restore, while importing onto one with existing entries still lets
+      the backup win for anything both sides know about. Verified with
+      real files on disk on both scripts: a full export/import round
+      trip, importing onto an empty registry, a collision where the
+      import correctly wins, entries absent from the import correctly
+      preserved, and an empty import file correctly touching nothing and
+      returning a zero count.
 
 - [x] **mDNS/DNS-SD service browser.** The other two scripts only ever ask
       mDNS one narrow question at a time (a specific IP's hostname, or
@@ -623,10 +707,43 @@ Ideas discussed but not yet implemented, for `network_scanner.py` and
       with the labeled device absent, confirming the missing-devices
       report shows the label instead of nothing.
 
-- [ ] **MQTT/Home Assistant presence publishing.** Let `--watch` publish
+- [x] **MQTT/Home Assistant presence publishing.** Let `--watch` publish
       device presence via MQTT discovery, so it can act as a real
       presence sensor in a home automation setup instead of just a
       terminal log.
+      Done: a from-scratch, publish-only MQTT 3.1.1 client
+      (`publish_mqtt()` + the `_mqtt_*` wire-format helpers, stdlib
+      `socket`/`struct` only) in both scripts, plus
+      `--mqtt-host`/`--mqtt-port`/`--mqtt-username`/`--mqtt-password`/
+      `--mqtt-client-id`/`--mqtt-discovery-prefix`. Same "implement the
+      wire protocol yourself" approach this project already takes for
+      DHCP/DNS/UPnP. Publish-only and QoS 0 only - a presence sensor only
+      ever pushes its own current state, so there's no subscribe/receive
+      path and no packet-identifier/ack bookkeeping to implement.
+      `build_ha_presence_publishes()` turns every device in a scan into a
+      Home Assistant MQTT Discovery `binary_sensor` (`device_class:
+      "presence"`) - publishing its retained `config` topic once
+      auto-registers the entity in Home Assistant, no manual YAML needed;
+      a retained `state` topic publish (`ON`) means a restarted
+      broker/Home Assistant still shows the last known state instead of
+      "unavailable". `build_ha_absence_publishes()` publishes a retained
+      `OFF` for whatever `_find_missing_devices()` reports as no longer
+      seen, so a dropped-off device actively goes "away" instead of
+      silently keeping its stale last state forever. Both unconditional
+      of `--quiet`, same reasoning as `--metrics-file` above. A failed
+      MQTT publish (unreachable broker, bad credentials) warns to stderr
+      and never crashes the scan, the same convention `--notify-webhook`
+      already established. Verified with real, unmocked TCP: a genuine
+      fake MQTT broker (its own thread, a real loopback socket, actually
+      parsing the MQTT fixed-header/remaining-length wire format rather
+      than just capturing raw bytes) confirmed the exact CONNECT/CONNACK/
+      PUBLISH/DISCONNECT sequence and byte contents on both scripts, plus
+      a broker-rejection and an unreachable-host case. Mobile's
+      `node_id` default (`mobile_network_scanner`, vs. desktop's
+      `network_scanner`) is deliberately different so entity unique-IDs
+      never collide if both scripts happen to publish to the same broker
+      - though see this file's closing note on how good a fit this
+      actually is for a phone.
 
 - [x] **Local web dashboard.** A small `http.server`-based page showing
       the live device table, glanceable from a phone browser while
@@ -898,6 +1015,12 @@ see above.
 Weaker fit, not started: a `--identify IP` deep-dive mode would work for
 banner grabbing and a wider port list, but would be missing the MAC/
 vendor half entirely (no ARP access on iOS) - a strictly smaller version
-of the desktop one. MQTT/Home Assistant publishing and a local web
-dashboard both assume something staying resident and reachable, which
-doesn't fit a phone that isn't left running as a server.
+of the desktop one. A local web dashboard assumes something staying
+resident and reachable, which doesn't fit a phone that isn't left running
+as a server - not attempted here for that reason. MQTT/Home Assistant
+publishing shares that same weaker fit (a `--watch` loop needs to
+actually be running for presence to mean anything) but was still built
+for both scripts, since nothing stops someone from running a one-off
+`--mqtt-host` scan from a phone to push a single presence update by
+hand - see "MQTT/Home Assistant presence publishing" above for the
+honest caveat on `--watch`'s fit specifically.

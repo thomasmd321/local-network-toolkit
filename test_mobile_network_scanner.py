@@ -3,6 +3,8 @@ import ipaddress
 import json
 import socket
 import struct
+import sys
+import threading
 import urllib.error
 from unittest.mock import MagicMock, patch
 
@@ -1314,3 +1316,725 @@ class TestDisplayHostname:
 
     def test_returns_empty_string_when_neither_is_set(self):
         assert ms._display_hostname("", "") == ""
+
+
+class TestDiffDevices:
+    def test_no_changes_between_identical_lists(self):
+        devices = [{"ip": "192.168.1.5", "hostname": "phone", "port": 62078, "banner": "", "risky_ports": []}]
+
+        result = ms.diff_devices(devices, devices)
+
+        assert result == {"added": [], "removed": [], "changed": []}
+
+    def test_reports_an_added_device(self):
+        old = []
+        new = [{"ip": "192.168.1.5", "hostname": "phone", "port": 62078, "banner": "", "risky_ports": []}]
+
+        result = ms.diff_devices(old, new)
+
+        assert result["added"] == new
+        assert result["removed"] == []
+        assert result["changed"] == []
+
+    def test_reports_a_removed_device(self):
+        old = [{"ip": "192.168.1.5", "hostname": "phone", "port": 62078, "banner": "", "risky_ports": []}]
+        new = []
+
+        result = ms.diff_devices(old, new)
+
+        assert result["removed"] == old
+        assert result["added"] == []
+
+    def test_reports_a_changed_port(self):
+        old = [{"ip": "192.168.1.5", "hostname": "phone", "port": 62078, "banner": "", "risky_ports": []}]
+        new = [{"ip": "192.168.1.5", "hostname": "phone", "port": 80, "banner": "", "risky_ports": []}]
+
+        result = ms.diff_devices(old, new)
+
+        assert result["changed"] == [{"key": "192.168.1.5", "ip": "192.168.1.5", "changes": {"port": (62078, 80)}}]
+
+    def test_ip_field_itself_is_never_reported_as_a_change(self):
+        # Matched by IP (the only identity this script has), so a device
+        # can't actually change its "ip" field while keeping the same
+        # identity - "ip" is excluded from the itemized changes anyway,
+        # consistent with the function this is modeled on.
+        old = [{"ip": "192.168.1.5", "hostname": "phone", "port": 80, "banner": "", "risky_ports": []}]
+        new = [{"ip": "192.168.1.5", "hostname": "phone", "port": 80, "banner": "", "risky_ports": []}]
+
+        result = ms.diff_devices(old, new)
+
+        assert result["changed"] == []
+
+    def test_risky_ports_change_is_reported_like_any_other_field(self):
+        old = [{"ip": "192.168.1.5", "hostname": "phone", "port": 23, "banner": "", "risky_ports": []}]
+        new = [{"ip": "192.168.1.5", "hostname": "phone", "port": 23, "banner": "", "risky_ports": [23]}]
+
+        result = ms.diff_devices(old, new)
+
+        assert result["changed"][0]["changes"] == {"risky_ports": ([], [23])}
+
+    def test_risky_ports_is_order_insensitive(self):
+        old = [{"ip": "192.168.1.5", "port": 80, "risky_ports": [23, 21]}]
+        new = [{"ip": "192.168.1.5", "port": 80, "risky_ports": [21, 23]}]
+
+        result = ms.diff_devices(old, new)
+
+        assert result["changed"] == []
+
+    def test_missing_risky_ports_key_normalizes_to_empty_list(self):
+        old = [{"ip": "192.168.1.5", "port": 80}]
+        new = [{"ip": "192.168.1.5", "port": 80, "risky_ports": []}]
+
+        result = ms.diff_devices(old, new)
+
+        assert result["changed"] == []
+
+
+class TestPrintDiffOnly:
+    def test_prints_no_changes_message_when_diff_is_empty(self, capsys):
+        ms._print_diff_only({"added": [], "removed": [], "changed": []}, color=False)
+
+        assert "No changes since the last tick." in capsys.readouterr().out
+
+    def test_prints_added_devices(self, capsys):
+        diff = {"added": [{"ip": "192.168.1.5", "hostname": "phone"}], "removed": [], "changed": []}
+
+        ms._print_diff_only(diff, color=False)
+
+        out = capsys.readouterr().out
+        assert "1 device(s) added:" in out
+        assert "192.168.1.5" in out
+        assert "phone" in out
+
+    def test_prints_removed_devices(self, capsys):
+        diff = {"added": [], "removed": [{"ip": "192.168.1.5", "hostname": ""}], "changed": []}
+
+        ms._print_diff_only(diff, color=False)
+
+        assert "1 device(s) removed:" in capsys.readouterr().out
+
+    def test_prints_changed_fields(self, capsys):
+        diff = {"added": [], "removed": [], "changed": [{"key": "192.168.1.5", "ip": "192.168.1.5", "changes": {"port": (80, 443)}}]}
+
+        ms._print_diff_only(diff, color=False)
+
+        out = capsys.readouterr().out
+        assert "1 device(s) changed:" in out
+        assert "port: 80 -> 443" in out
+
+
+class TestLoadProfile:
+    def test_returns_empty_dict_when_file_does_not_exist(self, tmp_path):
+        assert ms._load_profile("home", tmp_path / "missing.ini") == {}
+
+    def test_returns_empty_dict_when_section_does_not_exist(self, tmp_path):
+        path = tmp_path / "profile.ini"
+        path.write_text("[work]\ntimeout = 2.0\n", encoding="utf-8")
+
+        assert ms._load_profile("home", path) == {}
+
+    def test_loads_a_real_section(self, tmp_path):
+        path = tmp_path / "profile.ini"
+        path.write_text("[home]\ntimeout = 0.8\nno-color = true\n", encoding="utf-8")
+
+        result = ms._load_profile("home", path)
+
+        assert result == {"timeout": "0.8", "no-color": "true"}
+
+    def test_returns_empty_dict_on_malformed_ini(self, tmp_path):
+        path = tmp_path / "profile.ini"
+        path.write_text("this is not valid ini [[[", encoding="utf-8")
+
+        assert ms._load_profile("home", path) == {}
+
+
+class TestApplyProfile:
+    def _make_test_parser(self):
+        parser = ms.argparse.ArgumentParser()
+        parser.add_argument("--timeout", type=float, default=0.5)
+        parser.add_argument("--quiet", action="store_true")
+        parser.add_argument("--set-label", action="append", default=[])
+        parser.add_argument("--output", type=str, default=None)
+        return parser
+
+    def test_coerces_a_float_flag(self):
+        parser = self._make_test_parser()
+        ms._apply_profile(parser, {"timeout": "0.8"})
+
+        args = parser.parse_args([])
+
+        assert args.timeout == 0.8
+        assert isinstance(args.timeout, float)
+
+    def test_coerces_a_store_true_flag(self):
+        parser = self._make_test_parser()
+        ms._apply_profile(parser, {"quiet": "true"})
+
+        args = parser.parse_args([])
+
+        assert args.quiet is True
+
+    def test_recognizes_common_boolean_spellings(self):
+        for value in ("1", "true", "True", "yes", "on"):
+            parser = self._make_test_parser()
+            ms._apply_profile(parser, {"quiet": value})
+            assert parser.parse_args([]).quiet is True, value
+        for value in ("0", "false", "no", "off", ""):
+            parser = self._make_test_parser()
+            ms._apply_profile(parser, {"quiet": value})
+            assert parser.parse_args([]).quiet is False, value
+
+    def test_explicit_cli_flag_overrides_the_profile_value(self):
+        parser = self._make_test_parser()
+        ms._apply_profile(parser, {"timeout": "0.8"})
+
+        args = parser.parse_args(["--timeout", "9.0"])
+
+        assert args.timeout == 9.0
+
+    def test_unknown_profile_key_is_silently_ignored(self):
+        parser = self._make_test_parser()
+        ms._apply_profile(parser, {"does-not-exist": "value"})  # Should not raise.
+
+        args = parser.parse_args([])
+
+        assert args.timeout == 0.5
+
+    def test_append_action_flags_are_skipped_not_overwritten(self):
+        parser = self._make_test_parser()
+        ms._apply_profile(parser, {"set-label": "192.168.1.5=Phone"})
+
+        args = parser.parse_args([])
+
+        assert args.set_label == []
+
+    def test_a_plain_string_flag_passes_through_unconverted(self):
+        parser = self._make_test_parser()
+        ms._apply_profile(parser, {"output": "results.json"})
+
+        args = parser.parse_args([])
+
+        assert args.output == "results.json"
+
+
+class TestRenderPrometheusMetrics:
+    def test_includes_help_and_type_lines_for_each_metric(self):
+        output = ms.render_prometheus_metrics(5, 2, 1, 1700000000.0)
+
+        assert "# HELP mobile_network_scanner_devices_total" in output
+        assert "# TYPE mobile_network_scanner_devices_total gauge" in output
+        assert "mobile_network_scanner_devices_total 5" in output
+        assert "mobile_network_scanner_devices_new_total 2" in output
+        assert "mobile_network_scanner_devices_risky_total 1" in output
+        assert "mobile_network_scanner_last_scan_timestamp_seconds 1700000000.0" in output
+
+    def test_has_no_ip_conflict_metric_at_all(self):
+        # Unlike network_scanner.py's version of this function: this
+        # script has no MAC address to compare against, so there's no
+        # equivalent check to report a count for.
+        output = ms.render_prometheus_metrics(5, 2, 1, 1700000000.0)
+
+        assert "ip_conflicts" not in output
+
+    def test_ends_with_a_trailing_newline(self):
+        assert ms.render_prometheus_metrics(0, 0, 0, 0.0).endswith("\n")
+
+
+class TestWritePrometheusMetrics:
+    def test_writes_the_rendered_content_to_the_real_file(self, tmp_path):
+        path = tmp_path / "metrics.prom"
+
+        ms.write_prometheus_metrics(path, 5, 2, 1, 1700000000.0)
+
+        content = path.read_text(encoding="utf-8")
+        assert "mobile_network_scanner_devices_total 5" in content
+
+    def test_no_leftover_tmp_file_after_a_normal_write(self, tmp_path):
+        path = tmp_path / "metrics.prom"
+
+        ms.write_prometheus_metrics(path, 1, 0, 0, 1.0)
+
+        assert not (tmp_path / "metrics.prom.tmp").exists()
+        assert path.exists()
+
+    def test_creates_parent_directories(self, tmp_path):
+        path = tmp_path / "nested" / "metrics.prom"
+
+        ms.write_prometheus_metrics(path, 1, 0, 0, 1.0)
+
+        assert path.exists()
+
+    def test_does_not_raise_when_write_fails(self, tmp_path, monkeypatch):
+        path = tmp_path / "metrics.prom"
+        monkeypatch.setattr(ms.Path, "mkdir", lambda *a, **k: (_ for _ in ()).throw(OSError("Permission denied")))
+
+        ms.write_prometheus_metrics(path, 1, 0, 0, 1.0)  # Should not raise.
+
+
+class TestExportKnownDevices:
+    def test_exports_the_current_registry(self, tmp_path):
+        registry_path = tmp_path / "known.json"
+        export_path = tmp_path / "backup.json"
+        ms._mark_new_devices(
+            [{"ip": "192.168.1.5", "hostname": "phone", "port": 62078}],
+            known_devices_path=registry_path,
+        )
+
+        count = ms.export_known_devices(export_path, known_devices_path=registry_path)
+
+        assert count == 1
+        exported = json.loads(export_path.read_text(encoding="utf-8"))
+        assert "192.168.1.5" in exported
+
+    def test_exports_an_empty_registry_as_an_empty_object(self, tmp_path):
+        count = ms.export_known_devices(tmp_path / "backup.json", known_devices_path=tmp_path / "known.json")
+
+        assert count == 0
+        assert json.loads((tmp_path / "backup.json").read_text(encoding="utf-8")) == {}
+
+
+class TestImportKnownDevices:
+    def test_merges_into_an_empty_registry(self, tmp_path):
+        backup_path = tmp_path / "backup.json"
+        backup_path.write_text(json.dumps({"192.168.1.5": {"ip": "192.168.1.5"}}), encoding="utf-8")
+        registry_path = tmp_path / "known.json"
+
+        count = ms.import_known_devices(backup_path, known_devices_path=registry_path)
+
+        assert count == 1
+        assert ms._load_known_devices(registry_path) == {"192.168.1.5": {"ip": "192.168.1.5"}}
+
+    def test_imported_entries_win_on_a_key_collision(self, tmp_path):
+        registry_path = tmp_path / "known.json"
+        ms._save_known_devices({"192.168.1.5": {"ip": "192.168.1.5", "label": "old"}}, registry_path)
+        backup_path = tmp_path / "backup.json"
+        backup_path.write_text(json.dumps({"192.168.1.5": {"ip": "192.168.1.5", "label": "new"}}), encoding="utf-8")
+
+        ms.import_known_devices(backup_path, known_devices_path=registry_path)
+
+        assert ms._load_known_devices(registry_path)["192.168.1.5"]["label"] == "new"
+
+    def test_preserves_entries_not_present_in_the_import(self, tmp_path):
+        registry_path = tmp_path / "known.json"
+        ms._save_known_devices({"192.168.1.50": {"ip": "192.168.1.50"}}, registry_path)
+        backup_path = tmp_path / "backup.json"
+        backup_path.write_text(json.dumps({"192.168.1.5": {"ip": "192.168.1.5"}}), encoding="utf-8")
+
+        ms.import_known_devices(backup_path, known_devices_path=registry_path)
+
+        merged = ms._load_known_devices(registry_path)
+        assert set(merged.keys()) == {"192.168.1.50", "192.168.1.5"}
+
+    def test_returns_zero_and_does_not_touch_registry_when_import_file_is_empty(self, tmp_path):
+        registry_path = tmp_path / "known.json"
+        ms._save_known_devices({"192.168.1.5": {"ip": "192.168.1.5"}}, registry_path)
+        backup_path = tmp_path / "backup.json"
+        backup_path.write_text("{}", encoding="utf-8")
+
+        count = ms.import_known_devices(backup_path, known_devices_path=registry_path)
+
+        assert count == 0
+        assert ms._load_known_devices(registry_path) == {"192.168.1.5": {"ip": "192.168.1.5"}}
+
+
+class TestMqttEncodeRemainingLength:
+    def test_encodes_zero_as_a_single_byte(self):
+        assert ms._mqtt_encode_remaining_length(0) == bytes([0x00])
+
+    def test_encodes_a_value_under_128_as_a_single_byte(self):
+        assert ms._mqtt_encode_remaining_length(127) == bytes([0x7F])
+
+    def test_encodes_128_as_two_bytes(self):
+        # The MQTT spec's own worked example: 128 -> 0x80 0x01.
+        assert ms._mqtt_encode_remaining_length(128) == bytes([0x80, 0x01])
+
+    def test_encodes_16383_as_two_bytes(self):
+        assert ms._mqtt_encode_remaining_length(16383) == bytes([0xFF, 0x7F])
+
+    def test_encodes_16384_as_three_bytes(self):
+        assert ms._mqtt_encode_remaining_length(16384) == bytes([0x80, 0x80, 0x01])
+
+    def test_raises_on_a_negative_length(self):
+        with pytest.raises(ValueError):
+            ms._mqtt_encode_remaining_length(-1)
+
+    def test_raises_when_over_the_four_byte_maximum(self):
+        with pytest.raises(ValueError):
+            ms._mqtt_encode_remaining_length(268435456)
+
+
+class TestMqttPackets:
+    def test_connect_packet_has_the_correct_fixed_header_type(self):
+        packet = ms._mqtt_connect_packet("client1")
+
+        assert packet[0] == 0x10
+
+    def test_connect_packet_contains_the_protocol_name_and_level(self):
+        packet = ms._mqtt_connect_packet("client1")
+
+        # Fixed header (2 bytes for a short packet) + "MQTT" length-prefixed string + protocol level byte (4).
+        assert packet[2:8] == b"\x00\x04MQTT"
+        assert packet[8] == 4
+
+    def test_connect_packet_sets_clean_session_flag(self):
+        packet = ms._mqtt_connect_packet("client1")
+
+        connect_flags = packet[9]
+        assert connect_flags & 0x02  # Clean Session bit
+
+    def test_connect_packet_sets_username_and_password_flags_when_given(self):
+        packet = ms._mqtt_connect_packet("client1", username="bob", password="secret")
+
+        connect_flags = packet[9]
+        assert connect_flags & 0x80  # username flag
+        assert connect_flags & 0x40  # password flag
+
+    def test_connect_packet_omits_username_password_flags_when_not_given(self):
+        packet = ms._mqtt_connect_packet("client1")
+
+        connect_flags = packet[9]
+        assert not (connect_flags & 0x80)
+        assert not (connect_flags & 0x40)
+
+    def test_publish_packet_has_the_correct_fixed_header_type_and_no_retain(self):
+        packet = ms._mqtt_publish_packet("a/b", b"payload", retain=False)
+
+        assert packet[0] == 0x30
+
+    def test_publish_packet_sets_the_retain_flag(self):
+        packet = ms._mqtt_publish_packet("a/b", b"payload", retain=True)
+
+        assert packet[0] == 0x31
+
+    def test_publish_packet_contains_the_topic_and_payload(self):
+        packet = ms._mqtt_publish_packet("a/b", b"hello")
+
+        assert b"a/b" in packet
+        assert packet.endswith(b"hello")
+
+    def test_disconnect_packet_is_the_fixed_two_byte_mqtt_constant(self):
+        assert ms._MQTT_DISCONNECT_PACKET == bytes([0xE0, 0x00])
+
+
+class TestMqttSafeId:
+    def test_replaces_dots_in_an_ip_address(self):
+        assert ms._mqtt_safe_id("192.168.1.5") == "192_168_1_5"
+
+    def test_leaves_alphanumerics_hyphens_and_underscores_alone(self):
+        assert ms._mqtt_safe_id("already-safe_id123") == "already-safe_id123"
+
+
+class TestBuildHaPresencePublishes:
+    def test_builds_one_config_and_one_state_publish_per_device(self):
+        devices = [{"ip": "192.168.1.5", "hostname": "phone"}]
+
+        publishes = ms.build_ha_presence_publishes(devices)
+
+        assert len(publishes) == 2
+        topics = [p[0] for p in publishes]
+        assert "homeassistant/binary_sensor/mobile_network_scanner_192_168_1_5/config" in topics
+        assert "homeassistant/binary_sensor/mobile_network_scanner_192_168_1_5/state" in topics
+
+    def test_all_publishes_are_retained(self):
+        devices = [{"ip": "192.168.1.5", "hostname": "phone"}]
+
+        publishes = ms.build_ha_presence_publishes(devices)
+
+        assert all(retain is True for _topic, _payload, retain in publishes)
+
+    def test_state_payload_is_on(self):
+        devices = [{"ip": "192.168.1.5", "hostname": "phone"}]
+
+        publishes = ms.build_ha_presence_publishes(devices)
+        state_payload = next(payload for topic, payload, _r in publishes if topic.endswith("/state"))
+
+        assert state_payload == b"ON"
+
+    def test_config_payload_is_valid_json_with_presence_device_class(self):
+        devices = [{"ip": "192.168.1.5", "hostname": "phone"}]
+
+        publishes = ms.build_ha_presence_publishes(devices)
+        config_payload = next(payload for topic, payload, _r in publishes if topic.endswith("/config"))
+        config = json.loads(config_payload)
+
+        assert config["device_class"] == "presence"
+        assert config["unique_id"] == "mobile_network_scanner_192_168_1_5"
+        assert config["state_topic"].endswith("/state")
+
+    def test_falls_back_to_ip_when_no_hostname_or_label(self):
+        devices = [{"ip": "192.168.1.5", "hostname": ""}]
+
+        publishes = ms.build_ha_presence_publishes(devices)
+        config = json.loads(next(payload for topic, payload, _r in publishes if topic.endswith("/config")))
+
+        assert "192.168.1.5" in config["name"]
+
+    def test_respects_a_custom_discovery_prefix_and_node_id(self):
+        devices = [{"ip": "192.168.1.5"}]
+
+        publishes = ms.build_ha_presence_publishes(devices, discovery_prefix="custom", node_id="mynode")
+
+        assert publishes[0][0].startswith("custom/binary_sensor/mynode_")
+
+
+class TestBuildHaAbsencePublishes:
+    def test_builds_one_off_state_publish_per_missing_device(self):
+        missing = [{"key": "192.168.1.5", "last_seen": "2024-01-01T00:00:00"}]
+
+        publishes = ms.build_ha_absence_publishes(missing)
+
+        assert len(publishes) == 1
+        topic, payload, retain = publishes[0]
+        assert topic == "homeassistant/binary_sensor/mobile_network_scanner_192_168_1_5/state"
+        assert payload == b"OFF"
+        assert retain is True
+
+    def test_empty_missing_list_produces_no_publishes(self):
+        assert ms.build_ha_absence_publishes([]) == []
+
+
+class TestPublishMqtt:
+    """Real, unmocked TCP: a genuine fake MQTT broker over real loopback
+    sockets, verifying the actual wire bytes sent by publish_mqtt()."""
+
+    def _run_fake_broker(self, expect_packets=1, respond_ok=True):
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        received = {"data": b""}
+
+        def serve():
+            conn, _addr = server.accept()
+            conn.recv(4096)  # CONNECT
+            if respond_ok:
+                conn.sendall(bytes([0x20, 0x02, 0x00, 0x00]))
+            else:
+                conn.sendall(bytes([0x20, 0x02, 0x00, 0x05]))  # a rejection code
+            conn.settimeout(1.0)
+            try:
+                while True:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    received["data"] += chunk
+            except socket.timeout:
+                pass
+            conn.close()
+            server.close()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        return port, thread, received
+
+    def test_publishes_are_actually_sent_over_a_real_socket(self):
+        port, thread, received = self._run_fake_broker()
+
+        ms.publish_mqtt("127.0.0.1", port, "test-client", [("a/b", b"hello", False)])
+        thread.join(timeout=2)
+
+        assert b"a/b" in received["data"]
+        assert b"hello" in received["data"]
+
+    def test_disconnect_is_sent_after_publishes(self):
+        port, thread, received = self._run_fake_broker()
+
+        ms.publish_mqtt("127.0.0.1", port, "test-client", [("a/b", b"hello", False)])
+        thread.join(timeout=2)
+
+        assert received["data"].endswith(bytes([0xE0, 0x00]))
+
+    def test_raises_runtime_error_when_broker_rejects_the_connection(self):
+        port, thread, _received = self._run_fake_broker(respond_ok=False)
+
+        with pytest.raises(RuntimeError, match="rejected"):
+            ms.publish_mqtt("127.0.0.1", port, "test-client", [("a/b", b"hello", False)])
+        thread.join(timeout=2)
+
+    def test_raises_oserror_when_nothing_is_listening(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()  # Bound-then-closed port - nothing listening there now.
+
+        with pytest.raises(OSError):
+            ms.publish_mqtt("127.0.0.1", port, "test-client", [], timeout=1.0)
+
+
+class TestMainDiffOnly:
+    """End-to-end --watch --diff-only: two ticks, mocking only the scan
+    itself and time.sleep (to end the loop) - everything else (arg
+    parsing, the registry, diff_devices(), printing) runs for real."""
+
+    def test_first_tick_prints_full_table_second_tick_prints_diff_only(self, tmp_path, monkeypatch, capsys):
+        known_path = tmp_path / "known.json"
+        tick1 = [{"ip": "192.168.1.5", "hostname": "phone", "port": 62078, "banner": "", "risky_ports": []}]
+        tick2 = [{"ip": "192.168.1.5", "hostname": "phone", "port": 80, "banner": "", "risky_ports": []}]
+
+        monkeypatch.setattr(sys, "argv", ["mobile_network_scanner.py", "192.168.1.0/24", "--watch", "1", "--diff-only", "--no-color"])
+        with patch.object(ms, "_KNOWN_DEVICES_PATH", known_path), \
+             patch.object(ms, "scan_all_subnets", side_effect=[tick1, tick2]), \
+             patch.object(ms.time, "sleep", side_effect=[None, KeyboardInterrupt]):
+            ms.main()
+
+        out = capsys.readouterr().out
+        assert "IP Address" in out  # First tick: the full table header.
+        assert "1 device(s) changed:" in out  # Second tick: diff-only output.
+        assert "port: 62078 -> 80" in out
+
+    def test_no_previous_tick_means_no_diff_only_output_on_the_very_first_tick(self, tmp_path, monkeypatch, capsys):
+        known_path = tmp_path / "known.json"
+        devices = [{"ip": "192.168.1.5", "hostname": "phone", "port": 62078, "banner": "", "risky_ports": []}]
+
+        monkeypatch.setattr(sys, "argv", ["mobile_network_scanner.py", "192.168.1.0/24", "--diff-only", "--no-color"])
+        with patch.object(ms, "_KNOWN_DEVICES_PATH", known_path), \
+             patch.object(ms, "scan_all_subnets", return_value=devices):
+            ms.main()
+
+        out = capsys.readouterr().out
+        assert "IP Address" in out
+        assert "No changes since the last tick." not in out
+
+
+class TestMainProfile:
+    def test_profile_values_are_used_when_not_overridden_on_the_command_line(self, tmp_path, monkeypatch):
+        profile_path = tmp_path / "profile.ini"
+        profile_path.write_text("[home]\ntimeout = 1.5\n", encoding="utf-8")
+        known_path = tmp_path / "known.json"
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["mobile_network_scanner.py", "192.168.1.0/24", "--profile", "home", "--profile-file", str(profile_path), "--no-color", "--quiet"],
+        )
+        with patch.object(ms, "_KNOWN_DEVICES_PATH", known_path), \
+             patch.object(ms, "scan_all_subnets", return_value=[]) as mock_scan:
+            ms.main()
+
+        assert mock_scan.call_args.kwargs["timeout"] == 1.5
+
+    def test_explicit_cli_timeout_overrides_the_profile(self, tmp_path, monkeypatch):
+        profile_path = tmp_path / "profile.ini"
+        profile_path.write_text("[home]\ntimeout = 1.5\n", encoding="utf-8")
+        known_path = tmp_path / "known.json"
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["mobile_network_scanner.py", "192.168.1.0/24", "--profile", "home", "--profile-file", str(profile_path),
+             "--timeout", "2.0", "--no-color", "--quiet"],
+        )
+        with patch.object(ms, "_KNOWN_DEVICES_PATH", known_path), \
+             patch.object(ms, "scan_all_subnets", return_value=[]) as mock_scan:
+            ms.main()
+
+        assert mock_scan.call_args.kwargs["timeout"] == 2.0
+
+    def test_unknown_profile_name_is_a_usage_error(self, tmp_path, monkeypatch, capsys):
+        profile_path = tmp_path / "profile.ini"
+        profile_path.write_text("[home]\ntimeout = 1.5\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["mobile_network_scanner.py", "--profile", "office", "--profile-file", str(profile_path), "--doctor"],
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            ms.main()
+
+        assert excinfo.value.code == 2
+        assert "not found" in capsys.readouterr().err
+
+
+class TestMainMetricsFile:
+    def test_writes_metrics_after_a_real_scan(self, tmp_path, monkeypatch):
+        known_path = tmp_path / "known.json"
+        metrics_path = tmp_path / "metrics.prom"
+        devices = [{"ip": "192.168.1.5", "hostname": "phone", "port": 62078, "banner": "", "risky_ports": []}]
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["mobile_network_scanner.py", "192.168.1.0/24", "--metrics-file", str(metrics_path), "--no-color", "--quiet"],
+        )
+        with patch.object(ms, "_KNOWN_DEVICES_PATH", known_path), \
+             patch.object(ms, "scan_all_subnets", return_value=devices):
+            ms.main()
+
+        content = metrics_path.read_text(encoding="utf-8")
+        assert "mobile_network_scanner_devices_total 1" in content
+
+    def test_writes_zeroed_metrics_on_an_empty_scan(self, tmp_path, monkeypatch):
+        known_path = tmp_path / "known.json"
+        metrics_path = tmp_path / "metrics.prom"
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["mobile_network_scanner.py", "192.168.1.0/24", "--metrics-file", str(metrics_path), "--no-color", "--quiet"],
+        )
+        with patch.object(ms, "_KNOWN_DEVICES_PATH", known_path), \
+             patch.object(ms, "scan_all_subnets", return_value=[]):
+            ms.main()
+
+        content = metrics_path.read_text(encoding="utf-8")
+        assert "mobile_network_scanner_devices_total 0" in content
+
+
+class TestMainExportImportKnownDevices:
+    def test_export_flag_exits_zero_after_writing(self, tmp_path, monkeypatch, capsys):
+        known_path = tmp_path / "known.json"
+        ms._mark_new_devices([{"ip": "192.168.1.5"}], known_devices_path=known_path)
+        export_path = tmp_path / "backup.json"
+
+        monkeypatch.setattr(sys, "argv", ["mobile_network_scanner.py", "--export-known-devices", str(export_path)])
+        with patch.object(ms, "_KNOWN_DEVICES_PATH", known_path):
+            with pytest.raises(SystemExit) as excinfo:
+                ms.main()
+
+        assert excinfo.value.code == 0
+        assert export_path.exists()
+        assert "Exported 1" in capsys.readouterr().out
+
+    def test_import_flag_exits_zero_after_merging(self, tmp_path, monkeypatch, capsys):
+        known_path = tmp_path / "known.json"
+        backup_path = tmp_path / "backup.json"
+        backup_path.write_text(json.dumps({"192.168.1.5": {"ip": "192.168.1.5"}}), encoding="utf-8")
+
+        monkeypatch.setattr(sys, "argv", ["mobile_network_scanner.py", "--import-known-devices", str(backup_path)])
+        with patch.object(ms, "_KNOWN_DEVICES_PATH", known_path):
+            with pytest.raises(SystemExit) as excinfo:
+                ms.main()
+
+        assert excinfo.value.code == 0
+        assert ms._load_known_devices(known_path) == {"192.168.1.5": {"ip": "192.168.1.5"}}
+        assert "Imported 1" in capsys.readouterr().out
+
+
+class TestMainMqtt:
+    def test_publish_mqtt_is_called_with_presence_and_absence_publishes(self, tmp_path, monkeypatch):
+        known_path = tmp_path / "known.json"
+        devices = [{"ip": "192.168.1.5", "hostname": "phone", "port": 62078, "banner": "", "risky_ports": []}]
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["mobile_network_scanner.py", "192.168.1.0/24", "--mqtt-host", "broker.local", "--no-color", "--quiet"],
+        )
+        with patch.object(ms, "_KNOWN_DEVICES_PATH", known_path), \
+             patch.object(ms, "scan_all_subnets", return_value=devices), \
+             patch.object(ms, "publish_mqtt") as mock_publish:
+            ms.main()
+
+        assert mock_publish.called
+        host, port, client_id, publishes = mock_publish.call_args.args
+        assert host == "broker.local"
+        assert port == 1883
+        assert any(topic.endswith("/state") and payload == b"ON" for topic, payload, _r in publishes)
+
+    def test_a_failed_mqtt_publish_warns_but_does_not_crash_the_scan(self, tmp_path, monkeypatch, capsys):
+        known_path = tmp_path / "known.json"
+        devices = [{"ip": "192.168.1.5", "hostname": "phone", "port": 62078, "banner": "", "risky_ports": []}]
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["mobile_network_scanner.py", "192.168.1.0/24", "--mqtt-host", "broker.local", "--no-color", "--quiet"],
+        )
+        with patch.object(ms, "_KNOWN_DEVICES_PATH", known_path), \
+             patch.object(ms, "scan_all_subnets", return_value=devices), \
+             patch.object(ms, "publish_mqtt", side_effect=OSError("connection refused")):
+            ms.main()  # Should not raise.

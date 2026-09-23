@@ -344,6 +344,31 @@ The very first run (or right after `--forget-known-devices`) will mark
 every device `NEW`, since nothing has been seen before yet — that's
 expected, not a bug.
 
+### Only printing what changed (`--diff-only`)
+
+Under `--watch`, `--diff-only` replaces the full results table on every
+tick after the first with just what changed since the previous one —
+devices added, devices removed, and per-field changes (a different port,
+a newly risky port, etc.) on devices present in both:
+
+```
+python network_scanner.py --watch 300 --diff-only
+python mobile_network_scanner.py --watch 300 --diff-only
+```
+
+This complements `--quiet` above rather than duplicating it: `--quiet`
+suppresses a *boring* tick entirely, while `--diff-only` makes an
+*interesting* tick's output shorter, showing only what's new instead of
+reprinting every unchanged device alongside it. The very first tick still
+prints the full table as normal, since there's no previous tick yet to
+diff against. Combine both for the quietest possible long-running
+monitor — nothing at all on a boring tick, just the diff on an
+interesting one:
+
+```
+python network_scanner.py --watch 300 --diff-only --quiet
+```
+
 ## Recovering from a flaky scan (`--retries`)
 
 A single dropped ARP/ping reply (or one flaky TCP connect on the mobile
@@ -423,6 +448,28 @@ for it, though that also means it won't show as `NEW` the next time it's
 actually scanned (labeling it counts as "already known"). A label also
 appears in place of the hostname in the "previously-seen device(s) not
 found" report if that device goes missing later.
+
+### Backing up or moving the registry
+
+Labeling effort (and everything else the known-devices registry tracks —
+first-seen/last-seen timestamps, ports, etc.) lives only on whichever
+machine ran the scans, so `--export-known-devices FILE` copies it out for
+backup or to move to a new machine, and `--import-known-devices FILE`
+merges a previously-exported file back in:
+
+```
+python network_scanner.py --export-known-devices backup.json
+python network_scanner.py --import-known-devices backup.json
+```
+
+Both exit immediately without scanning. The registry is already a plain
+JSON file (`~/.cache/network_scanner_known_devices.json` and its mobile
+equivalent), so exporting is really just a documented, formatted copy of
+it — importing onto a fresh machine's empty registry is a full restore.
+Importing onto a registry that already has some entries is a deliberate
+"restore from backup," not a symmetric merge: an imported entry wins on a
+key collision (e.g. a label edited differently on two machines), while
+anything only the current registry knows about is left untouched.
 
 ## Excluding devices from a scan
 
@@ -908,6 +955,96 @@ need a small relay in between, or just point it at a service that already
 speaks the Slack-compatible format (many push services, including
 ntfy.sh's JSON publish endpoint, do).
 
+## Prometheus metrics for `--watch` (`--metrics-file`)
+
+`--metrics-file FILE` writes each scan's summary counts to `FILE` in
+Prometheus text exposition format, ready for `node_exporter`'s textfile
+collector to pick up — turning any always-on `--watch` box into a
+Grafana-graphable metrics source with no new runtime dependency:
+
+```
+python network_scanner.py --watch 300 --metrics-file /var/lib/node_exporter/textfile_collector/network_scanner.prom
+```
+
+`network_scanner.py` writes `network_scanner_devices_total`,
+`network_scanner_devices_new_total`, `network_scanner_devices_risky_total`,
+`network_scanner_ip_conflicts_total`, and
+`network_scanner_last_scan_timestamp_seconds`; `mobile_network_scanner.py`
+writes the same set (`mobile_network_scanner_...`) minus the IP-conflicts
+metric, since it has no MAC address to compare against and so nothing to
+report a count for (see the IP-conflict section above). The file is
+written atomically — a temp file, then renamed into place — since
+`node_exporter` polls the textfile-collector directory on its own
+schedule, independent of when a scan happens to be mid-write. Unlike
+`--notify-webhook`, this writes on every tick regardless of `--quiet` or
+whether anything changed — "0 new devices" is itself meaningful data to a
+dashboard, not just the interesting ticks `--notify-webhook` is about
+flagging.
+
+## MQTT / Home Assistant presence publishing
+
+`--mqtt-host HOST` publishes each scan's results to an MQTT broker as Home
+Assistant MQTT Discovery presence sensors, so `--watch` can act as a real
+presence sensor in a home automation setup instead of just a terminal log:
+
+```
+python network_scanner.py --watch 300 --mqtt-host 192.168.1.10
+python mobile_network_scanner.py --watch 300 --mqtt-host 192.168.1.10 --mqtt-username bob --mqtt-password secret
+```
+
+Every device found becomes a `binary_sensor` entity (`device_class:
+"presence"`) in Home Assistant automatically the first time it's
+published — no manual YAML entity configuration needed. A device that
+drops out of a later scan is actively published `OFF` (using the same
+"previously-seen device(s) not found" data the missing-device report
+above already computes), rather than just silently no longer being
+republished and left showing its stale last state. Other flags:
+`--mqtt-port` (default 1883), `--mqtt-client-id` (defaults to
+`network_scanner`/`mobile_network_scanner`, so both scripts can safely
+publish to the same broker without colliding), and
+`--mqtt-discovery-prefix` (default `homeassistant`, matching Home
+Assistant's own default). A failed publish (unreachable broker, bad
+credentials) prints a warning to stderr and never crashes the scan, the
+same convention `--notify-webhook` uses. This is implemented as a small,
+from-scratch, publish-only MQTT 3.1.1 client (stdlib `socket` only, no new
+dependency) — the same "implement the wire protocol yourself" approach
+this project already takes for DHCP/DNS/UPnP elsewhere in this repo.
+
+## Config file / profiles
+
+With 25+ flags on each scanner now, `--profile NAME` loads a named
+section from an INI file as new defaults, so a long recurring combination
+of flags doesn't need retyping every time:
+
+```
+# ~/.network_scanner.ini
+[home]
+timeout = 2.0
+exclude = 192.168.1.5,192.168.1.20/30
+log-history = /home/me/scan-history.jsonl
+no-color = true
+```
+
+```
+python network_scanner.py --profile home
+```
+
+Any flag given explicitly on the command line still overrides the
+profile's value for that run — a profile only changes what a flag falls
+back to when it isn't passed at all, so a one-off scan never requires
+editing the file first:
+
+```
+python network_scanner.py --profile home --timeout 5.0   # profile's timeout=2.0 is overridden
+```
+
+`--profile-file FILE` points at a different INI file (default
+`~/.network_scanner.ini` / `~/.mobile_network_scanner.ini`); a `--profile`
+name not found in it is a usage error rather than silently falling back to
+defaults. A repeatable flag (`--set-label`, `--remove-label`) can't be set
+from a profile and is skipped if present — see the file's own comments in
+either script for why.
+
 ## Quiet mode and environment diagnostics
 
 `--quiet` suppresses everything — even the scan's own "Scanning..." line —
@@ -946,7 +1083,7 @@ always means iOS's Local Network Privacy restriction (see
 ## Shell tab-completion
 
 `completions.bash` adds bash tab-completion for every script's flag names
-(18+ for the two scanners, fewer for the smaller tools, but still easy to
+(30+ for the two scanners, fewer for the smaller tools, but still easy to
 half-remember). Source it from your `~/.bashrc`:
 
 ```
