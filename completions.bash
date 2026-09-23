@@ -4,7 +4,7 @@
 # dhcp_monitor.py, dns_check.py, and network_dashboard.py.
 #
 # Usage: source this file, e.g. from ~/.bashrc:
-#   source /path/to/Test-repo/completions.bash
+#   source /path/to/local-network-toolkit/completions.bash
 #
 # This only completes flag names - it doesn't understand a flag's
 # argument (a subnet, a port list, a file path), so pressing Tab right

@@ -1,4 +1,4 @@
-# Test-repo
+# Local Network Toolkit
 
 Python tools for understanding your local network: which devices are on
 it (`network_scanner.py`, `mobile_network_scanner.py`), what changed
@@ -290,7 +290,7 @@ from the App Store (not "a-Shell mini," which strips out `git`), then either
 `git clone` this repo or grab just the one file you need with `curl`:
 
 ```
-curl -O https://raw.githubusercontent.com/thomasmd321/Test-repo/claude/local-network-device-discovery-joawq5/mobile_network_scanner.py
+curl -O https://raw.githubusercontent.com/thomasmd321/local-network-toolkit/claude/local-network-device-discovery-joawq5/mobile_network_scanner.py
 python3 mobile_network_scanner.py
 ```
 
@@ -950,7 +950,7 @@ always means iOS's Local Network Privacy restriction (see
 half-remember). Source it from your `~/.bashrc`:
 
 ```
-source /path/to/Test-repo/completions.bash
+source /path/to/local-network-toolkit/completions.bash
 ```
 
 It only completes flag *names*, not their arguments (a subnet, a port

@@ -50,7 +50,7 @@ from reportlab.platypus import (
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 OUTPUT_PDF = REPO_ROOT / "docs" / "network_scanner_guide.pdf"
 
-REPO_URL = "https://github.com/thomasmd321/Test-repo"
+REPO_URL = "https://github.com/thomasmd321/local-network-toolkit"
 BRANCH = "claude/local-network-device-discovery-joawq5"
 
 
@@ -421,13 +421,13 @@ def build_pdf(desktop_diagram: Path, mobile_diagram: Path, terminal_mockup: Path
 
     story.append(Paragraph("Clone the whole repository (desktop / Termux)", styles["H2"]))
     story.append(code_block(f"""git clone {REPO_URL}.git
-cd Test-repo
+cd local-network-toolkit
 git checkout {BRANCH}"""))
 
     story.append(Paragraph("Grab a single file directly (no git needed)", styles["H2"]))
     story.append(Paragraph(
         "Useful on iOS, or anywhere you only want one script without the rest of the repo:", styles["Body"]))
-    story.append(code_block(f"""BASE=https://raw.githubusercontent.com/thomasmd321/Test-repo/{BRANCH}
+    story.append(code_block(f"""BASE=https://raw.githubusercontent.com/thomasmd321/local-network-toolkit/{BRANCH}
 curl -O $BASE/network_scanner.py
 curl -O $BASE/mobile_network_scanner.py"""))
     story.append(Paragraph(
@@ -817,7 +817,7 @@ python3 mobile_network_scanner.py --log-history history.jsonl"""))
     story.append(Paragraph(
         "completions.bash adds bash tab-completion for each script's flag names (18+ per script "
         "by now, easy to half-remember). Source it from your ~/.bashrc:", styles["Body"]))
-    story.append(code_block("source /path/to/Test-repo/completions.bash"))
+    story.append(code_block("source /path/to/local-network-toolkit/completions.bash"))
     story.append(Paragraph(
         "It only completes flag <i>names</i>, not their arguments (a subnet, a port list, a file "
         "path), and only fires for a direct invocation matching a script's own name "
