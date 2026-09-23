@@ -989,7 +989,7 @@ presence sensor in a home automation setup instead of just a terminal log:
 
 ```
 python network_scanner.py --watch 300 --mqtt-host 192.168.1.10
-python mobile_network_scanner.py --watch 300 --mqtt-host 192.168.1.10 --mqtt-username bob --mqtt-password secret
+python mobile_network_scanner.py --watch 300 --mqtt-host 192.168.1.10 --mqtt-username bob --mqtt-password-file ~/.mqtt_password
 ```
 
 Every device found becomes a `binary_sensor` entity (`device_class:
@@ -1009,6 +1009,53 @@ same convention `--notify-webhook` uses. This is implemented as a small,
 from-scratch, publish-only MQTT 3.1.1 client (stdlib `socket` only, no new
 dependency) — the same "implement the wire protocol yourself" approach
 this project already takes for DHCP/DNS/UPnP elsewhere in this repo.
+
+### Keeping the MQTT password off the command line
+
+`--mqtt-password` on the command line is visible to any other user on the
+same machine via `ps aux`, and lingers in shell history. Prefer
+`--mqtt-password-file FILE` (its contents, trimmed of surrounding
+whitespace) or the `MQTT_PASSWORD` environment variable instead — resolved
+in that order, with an explicit `--mqtt-password` always taking priority
+if given:
+
+```
+echo "secret" > ~/.mqtt_password && chmod 600 ~/.mqtt_password
+python network_scanner.py --watch 300 --mqtt-host 192.168.1.10 --mqtt-password-file ~/.mqtt_password
+MQTT_PASSWORD=secret python network_scanner.py --watch 300 --mqtt-host 192.168.1.10
+```
+
+The same exposure applies to a `--profile` INI file that stores an MQTT
+password directly — `chmod 600` it too.
+
+### TLS
+
+`--mqtt-tls` connects over TLS (port 8883 on most brokers) instead of
+plain TCP:
+
+```
+python network_scanner.py --watch 300 --mqtt-host mqtt.example.com --mqtt-port 8883 --mqtt-tls
+```
+
+A typical home broker's self-signed certificate will fail the default
+certificate/hostname verification; `--mqtt-insecure-tls` skips it (still
+encrypted, just no longer verifying who's on the other end — fine on a
+trusted LAN, not recommended over the open internet).
+
+### Availability
+
+Publishing device presence has no way to expire on its own — if the
+script crashes, the machine loses power, or `--watch` is killed mid-loop,
+Home Assistant keeps showing every device's last-published state forever.
+By default, every `--mqtt-host` run also publishes to a shared
+`{prefix}/{client-id}/availability` topic (`online` right after
+connecting) and sets it as this connection's MQTT Last Will (`offline`,
+delivered by the broker automatically if the connection ever drops
+without a clean disconnect) — each entity's discovery config points at
+this topic, so Home Assistant marks it "unavailable" the moment this
+script itself stops running, instead of silently trusting a state that
+may be hours old. `--mqtt-no-availability` turns this off if you'd rather
+not have it.
 
 ## Config file / profiles
 

@@ -2599,17 +2599,40 @@ def _mqtt_encode_string(value: str) -> bytes:
     return struct.pack(">H", len(data)) + data
 
 
-def _mqtt_connect_packet(client_id: str, username: Optional[str] = None, password: Optional[str] = None, keepalive: int = 60) -> bytes:
-    """Build an MQTT CONNECT packet (protocol level 4, i.e. MQTT 3.1.1), clean-session, no will message."""
+def _mqtt_connect_packet(
+    client_id: str,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    keepalive: int = 60,
+    will_topic: Optional[str] = None,
+    will_payload: bytes = b"",
+    will_retain: bool = False,
+) -> bytes:
+    """Build an MQTT CONNECT packet (protocol level 4, i.e. MQTT 3.1.1), clean-session.
+
+    A Will Message (will_topic/will_payload/will_retain) is the broker's
+    own job to deliver, not ours: it's published automatically if this
+    connection drops without a clean DISCONNECT (a crash, a killed
+    process, lost power) - see publish_mqtt()'s availability_topic for
+    the actual use of this. Always QoS 0, matching every other publish
+    this client sends - no Will QoS bits are ever set.
+    """
     protocol_name = _mqtt_encode_string("MQTT")
     protocol_level = bytes([4])
     connect_flags = 0x02  # Clean Session
+    if will_topic is not None:
+        connect_flags |= 0x04  # Will Flag
+        if will_retain:
+            connect_flags |= 0x20  # Will Retain
     if username is not None:
         connect_flags |= 0x80
     if password is not None:
         connect_flags |= 0x40
     variable_header = protocol_name + protocol_level + bytes([connect_flags]) + struct.pack(">H", keepalive)
     payload = _mqtt_encode_string(client_id)
+    if will_topic is not None:
+        payload += _mqtt_encode_string(will_topic)
+        payload += struct.pack(">H", len(will_payload)) + will_payload
     if username is not None:
         payload += _mqtt_encode_string(username)
     if password is not None:
@@ -2628,6 +2651,11 @@ def _mqtt_publish_packet(topic: str, payload: bytes, retain: bool = False) -> by
 _MQTT_DISCONNECT_PACKET = bytes([0xE0, 0x00])
 
 
+def mqtt_availability_topic(discovery_prefix: str, node_id: str) -> str:
+    """The shared topic this client's online/offline status is published to - see publish_mqtt()'s availability_topic."""
+    return f"{discovery_prefix}/{node_id}/availability"
+
+
 def publish_mqtt(
     host: str,
     port: int,
@@ -2636,6 +2664,9 @@ def publish_mqtt(
     username: Optional[str] = None,
     password: Optional[str] = None,
     timeout: float = 5.0,
+    use_tls: bool = False,
+    insecure_tls: bool = False,
+    availability_topic: Optional[str] = None,
 ) -> None:
     """Open one MQTT connection, publish every (topic, payload, retain) tuple at QoS 0, then disconnect.
 
@@ -2643,6 +2674,20 @@ def publish_mqtt(
         publishes: (topic, payload, retain) tuples, sent in order on one
             connection - see build_ha_presence_publishes()/
             build_ha_absence_publishes().
+        use_tls: Wrap the connection in TLS (port 8883 on most brokers)
+            instead of plain TCP - see the CLI's --mqtt-tls.
+        insecure_tls: Skip certificate hostname/chain verification -
+            needed for a typical home broker's self-signed certificate,
+            at the cost of not actually verifying it's who it claims to
+            be. Only has any effect when use_tls is also set.
+        availability_topic: If given, publishes "online" (retained) here
+            right after connecting, and sets it as this connection's MQTT
+            Last Will - the broker publishes "offline" (retained) here
+            automatically if the connection ever drops without a clean
+            DISCONNECT (a crash, a kill, lost power), instead of Home
+            Assistant silently trusting a presence state that's gone
+            stale. See build_ha_presence_publishes()'s own
+            availability_topic parameter for wiring an entity to watch it.
 
     Raises:
         RuntimeError: the broker's CONNACK reported anything other than
@@ -2650,16 +2695,31 @@ def publish_mqtt(
             authorized, etc. - see MQTT 3.1.1 spec S3.2.2.3 for the full
             code list; this doesn't decode which one, just that it failed).
         OSError: the TCP connection itself failed (unreachable host,
-            connection refused, timeout).
+            connection refused, timeout), or a TLS handshake/certificate
+            failure under use_tls.
     """
-    with socket.create_connection((host, port), timeout=timeout) as sock:
-        sock.sendall(_mqtt_connect_packet(client_id, username, password))
+    sock = socket.create_connection((host, port), timeout=timeout)
+    try:
+        if use_tls:
+            context = ssl.create_default_context()
+            if insecure_tls:
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
+            sock = context.wrap_socket(sock, server_hostname=host)
+        sock.sendall(_mqtt_connect_packet(
+            client_id, username, password,
+            will_topic=availability_topic, will_payload=b"offline", will_retain=True,
+        ))
         connack = sock.recv(4)
         if len(connack) < 4 or connack[0] != 0x20 or connack[3] != 0x00:
             raise RuntimeError(f"MQTT broker rejected the connection (CONNACK: {connack!r})")
+        if availability_topic:
+            sock.sendall(_mqtt_publish_packet(availability_topic, b"online", retain=True))
         for topic, payload, retain in publishes:
             sock.sendall(_mqtt_publish_packet(topic, payload, retain))
         sock.sendall(_MQTT_DISCONNECT_PACKET)
+    finally:
+        sock.close()
 
 
 def _mqtt_safe_id(key: str) -> str:
@@ -2668,7 +2728,10 @@ def _mqtt_safe_id(key: str) -> str:
 
 
 def build_ha_presence_publishes(
-    devices: List[Device], discovery_prefix: str = "homeassistant", node_id: str = "network_scanner"
+    devices: List[Device],
+    discovery_prefix: str = "homeassistant",
+    node_id: str = "network_scanner",
+    availability_topic: Optional[str] = None,
 ) -> List[Tuple[str, bytes, bool]]:
     """Build Home Assistant MQTT Discovery config + ON-state publishes for every device in this scan.
 
@@ -2684,6 +2747,13 @@ def build_ha_presence_publishes(
     this with build_ha_absence_publishes() and _find_missing_devices()'s
     own report, at the call site, to actively mark a dropped-off device
     away rather than leaving Home Assistant showing its stale last state.
+
+    Args:
+        availability_topic: If given (see mqtt_availability_topic()/
+            publish_mqtt()), added to every entity's config so Home
+            Assistant marks it "unavailable" - instead of trusting a
+            possibly stale retained state - whenever this script itself
+            stops publishing to it (a crash, a kill, lost power).
     """
     publishes: List[Tuple[str, bytes, bool]] = []
     for device in devices:
@@ -2692,14 +2762,17 @@ def build_ha_presence_publishes(
         name = device.get("hostname") or device.get("label") or device["ip"]
         state_topic = f"{discovery_prefix}/binary_sensor/{unique_id}/state"
         config_topic = f"{discovery_prefix}/binary_sensor/{unique_id}/config"
-        config_payload = json.dumps({
+        config: dict = {
             "name": f"{name} presence",
             "unique_id": unique_id,
             "state_topic": state_topic,
             "payload_on": "ON",
             "payload_off": "OFF",
             "device_class": "presence",
-        }).encode("utf-8")
+        }
+        if availability_topic:
+            config["availability_topic"] = availability_topic
+        config_payload = json.dumps(config).encode("utf-8")
         publishes.append((config_topic, config_payload, True))
         publishes.append((state_topic, b"ON", True))
     return publishes
@@ -2721,6 +2794,29 @@ def build_ha_absence_publishes(
         state_topic = f"{discovery_prefix}/binary_sensor/{unique_id}/state"
         publishes.append((state_topic, b"OFF", True))
     return publishes
+
+
+def _resolve_mqtt_password(mqtt_password: Optional[str], mqtt_password_file: Optional[str]) -> Optional[str]:
+    """Resolve the actual MQTT password to use: --mqtt-password itself, then --mqtt-password-file, then $MQTT_PASSWORD.
+
+    --mqtt-password is visible to any other user on the same machine via
+    `ps aux`/`/proc`, and lingers in shell history - a real exposure for
+    the one credential this project's MQTT feature introduces. Kept as an
+    option anyway (convenience, scripting) rather than removed, but a
+    file or environment variable is the safer choice whenever one's
+    available - tried in that order, after an explicit flag (which a
+    caller presumably typed on purpose, override intended) but before
+    falling through to the environment as the last, least-surprising
+    "nothing configured" fallback.
+
+    Raises:
+        OSError: --mqtt-password-file was given but couldn't be read.
+    """
+    if mqtt_password is not None:
+        return mqtt_password
+    if mqtt_password_file:
+        return Path(mqtt_password_file).read_text(encoding="utf-8").strip()
+    return os.environ.get("MQTT_PASSWORD")
 
 
 def main() -> None:
@@ -2938,9 +3034,21 @@ def main() -> None:
         metavar="HOST",
         help="Publish Home Assistant MQTT Discovery presence for every device found to this broker - see build_ha_presence_publishes()",
     )
-    parser.add_argument("--mqtt-port", type=int, default=1883, help="MQTT broker port (default: 1883)")
+    parser.add_argument("--mqtt-port", type=int, default=1883, help="MQTT broker port (default: 1883, or 8883 is common with --mqtt-tls)")
     parser.add_argument("--mqtt-username", type=str, default=None, help="MQTT broker username, if required")
-    parser.add_argument("--mqtt-password", type=str, default=None, help="MQTT broker password, if required")
+    parser.add_argument(
+        "--mqtt-password",
+        type=str,
+        default=None,
+        help="MQTT broker password, if required - visible in `ps`/shell history; prefer --mqtt-password-file or $MQTT_PASSWORD",
+    )
+    parser.add_argument(
+        "--mqtt-password-file",
+        type=str,
+        default=None,
+        metavar="FILE",
+        help="Read the MQTT broker password from FILE instead of --mqtt-password - see _resolve_mqtt_password()",
+    )
     parser.add_argument(
         "--mqtt-client-id", type=str, default="network_scanner", help="MQTT client ID (default: network_scanner)"
     )
@@ -2949,6 +3057,21 @@ def main() -> None:
         type=str,
         default="homeassistant",
         help="Home Assistant's MQTT Discovery topic prefix (default: homeassistant)",
+    )
+    parser.add_argument(
+        "--mqtt-tls",
+        action="store_true",
+        help="Connect to the MQTT broker over TLS instead of plain TCP",
+    )
+    parser.add_argument(
+        "--mqtt-insecure-tls",
+        action="store_true",
+        help="Under --mqtt-tls, skip certificate hostname/chain verification - needed for a typical self-signed home broker certificate, at the cost of not actually verifying it",
+    )
+    parser.add_argument(
+        "--mqtt-no-availability",
+        action="store_true",
+        help="Don't publish an online/offline availability topic (or set an MQTT Last Will) alongside device presence - see mqtt_availability_topic()",
     )
 
     if pre_args.profile:
@@ -2965,6 +3088,13 @@ def main() -> None:
         excluded_networks = _parse_exclusions(args.exclude) if args.exclude else []
     except ValueError as exc:
         parser.error(f"--exclude: {exc}")
+
+    mqtt_password = None
+    if args.mqtt_host:
+        try:
+            mqtt_password = _resolve_mqtt_password(args.mqtt_password, args.mqtt_password_file)
+        except OSError as exc:
+            parser.error(f"--mqtt-password-file: {exc}")
 
     if args.doctor:
         ok = run_doctor(color=color)
@@ -3143,12 +3273,20 @@ def main() -> None:
             )
 
         if args.mqtt_host:
+            availability_topic = (
+                None if args.mqtt_no_availability
+                else mqtt_availability_topic(args.mqtt_discovery_prefix, args.mqtt_client_id)
+            )
             try:
-                mqtt_publishes = build_ha_presence_publishes(devices, args.mqtt_discovery_prefix, args.mqtt_client_id)
+                mqtt_publishes = build_ha_presence_publishes(
+                    devices, args.mqtt_discovery_prefix, args.mqtt_client_id, availability_topic=availability_topic
+                )
                 mqtt_publishes += build_ha_absence_publishes(missing, args.mqtt_discovery_prefix, args.mqtt_client_id)
                 publish_mqtt(
                     args.mqtt_host, args.mqtt_port, args.mqtt_client_id, mqtt_publishes,
-                    username=args.mqtt_username, password=args.mqtt_password,
+                    username=args.mqtt_username, password=mqtt_password,
+                    use_tls=args.mqtt_tls, insecure_tls=args.mqtt_insecure_tls,
+                    availability_topic=availability_topic,
                 )
             except (OSError, RuntimeError) as exc:
                 print(f"Warning: MQTT publish failed: {exc}", file=sys.stderr)

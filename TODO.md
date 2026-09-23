@@ -962,6 +962,128 @@ Ideas discussed but not yet implemented, for `network_scanner.py` and
       softer `new_bssid` signal, not a downgrade, since security itself
       hadn't weakened).
 
+- [x] **`--mqtt-password-file`/`MQTT_PASSWORD` env var.** `--mqtt-password`
+      on the command line is visible to any other user on the same box via
+      `ps aux`, and lingers in shell history - a real exposure for the one
+      credential this project's own MQTT feature introduced. Add a way to
+      supply it without ever putting it on the command line: a
+      `--mqtt-password-file FILE` flag (read the file's contents, trimmed)
+      and/or falling back to an `MQTT_PASSWORD` environment variable when
+      neither `--mqtt-password` nor `--mqtt-password-file` is given -
+      `--mqtt-password` itself should probably stay for convenience/
+      scripting, just no longer be the only option. Worth a doc note
+      alongside this to `chmod 600` a profile file (see "Config file /
+      profiles") that stores a password too, since the same exposure
+      applies there.
+      Done: `_resolve_mqtt_password()` in both scripts, plus
+      `--mqtt-password-file FILE`. Precedence: `--mqtt-password` itself
+      (kept, not removed, for convenience/scripting) wins if given, then
+      `--mqtt-password-file`'s contents (stripped of surrounding
+      whitespace/the trailing newline a text editor or `echo` would
+      leave), then the `MQTT_PASSWORD` environment variable as the last,
+      least-surprising fallback. Resolved once in `main()`, only when
+      `--mqtt-host` is actually given, so a run with no MQTT flags at all
+      never touches the filesystem or environment for this. A missing/
+      unreadable `--mqtt-password-file` surfaces as a clean `argparse`
+      usage error (exit code 2), not a raw traceback. The README's own
+      `chmod 600` note (for a profile file storing a password) shipped
+      alongside this. Verified with real files on disk and a real
+      environment variable on both scripts: explicit-flag-wins precedence,
+      file fallback, whitespace stripped from the file's contents,
+      environment-variable fallback as the last resort, `None` when
+      nothing is configured, and the missing-file usage error - each
+      exercised both as the bare `_resolve_mqtt_password()` function and
+      through the real `main()` CLI path.
+
+- [x] **MQTT TLS support (`--mqtt-tls`).** `publish_mqtt()`'s from-scratch
+      client is a plain TCP socket only - credentials (once the item above
+      lands) and every presence payload go out unencrypted. Most brokers
+      that aren't purely on an isolated LAN (a cloud-hosted broker, a
+      VPN-reachable one) expect TLS on port 8883. Wrapping the socket with
+      `ssl.create_default_context()` before the CONNECT packet is a small
+      addition given the client already exists; would need a way to skip
+      certificate verification for a self-signed home broker (the same
+      `check_hostname=False`/`CERT_NONE` escape hatch `grab_banner()`
+      already uses elsewhere in these scripts), clearly documented as
+      reducing security rather than defaulting to it silently.
+      Done: `publish_mqtt()` in both scripts gained `use_tls`/
+      `insecure_tls` parameters (`--mqtt-tls`/`--mqtt-insecure-tls` on the
+      CLI) - exactly the `ssl.create_default_context()` +
+      `check_hostname=False`/`verify_mode=CERT_NONE` pattern this item
+      predicted, wrapping the already-connected raw socket right before
+      the CONNECT packet goes out. `--mqtt-insecure-tls` only has any
+      effect alongside `--mqtt-tls`, and its help text says plainly that
+      it trades away certificate verification rather than defaulting to
+      that silently. Verified two ways: a real, unmocked TLS handshake
+      during development - a genuine self-signed certificate (real
+      `openssl req -x509`), a real `ssl.SSLContext` broker thread over a
+      real loopback socket, and `publish_mqtt(..., use_tls=True,
+      insecure_tls=True)` completing the full CONNECT/CONNACK/PUBLISH/
+      DISCONNECT sequence through it correctly - kept as manual
+      verification rather than part of the committed suite, the same
+      reasoning `upnp_audit.py`'s simulated-router test and
+      `mdns_browser.py`'s real-multicast test already documented (shelling
+      out to `openssl`, or adding the `cryptography` package as a new test
+      dependency, just to generate a cert isn't guaranteed available on
+      every CI runner); and a mocked `TestPublishMqttTls` in the committed
+      suite on both scripts confirming the actual wiring - `wrap_socket()`
+      called with the right arguments, the *wrapped* socket (not the raw
+      one) does the real sending/closing, `--mqtt-tls` alone never touches
+      `ssl` at all, and `insecure_tls` flips exactly `check_hostname`/
+      `verify_mode` and nothing else.
+
+- [x] **MQTT Last Will/availability topic.** A retained `ON` presence
+      state has no way to expire on its own - if the script crashes, the
+      machine loses power, or `--watch` is just killed mid-loop, Home
+      Assistant keeps showing every device's last-published state forever,
+      with nothing indicating the presence sensor itself has gone stale.
+      Setting an MQTT Last Will (delivered by the broker automatically if
+      the connection drops uncleanly) on a shared `.../availability` topic
+      - `online` on CONNECT, `offline` as the will payload - lets Home
+      Assistant's own `availability_topic` entity config mark every
+      published sensor "unavailable" the moment this stops running,
+      instead of silently trusting a state that may be hours or days old.
+      Done: `_mqtt_connect_packet()` in both scripts gained
+      `will_topic`/`will_payload`/`will_retain` parameters (MQTT 3.1.1's
+      Will Flag/Will Retain connect-flag bits, plus the Will Topic/Will
+      Message payload fields in the spec's required order - Client ID,
+      Will Topic, Will Message, User Name, Password); `mqtt_availability_topic()`
+      builds the shared `{prefix}/{node_id}/availability` topic;
+      `publish_mqtt()`'s new `availability_topic` parameter sets that as
+      the connection's Will (payload `offline`, retained) and publishes
+      `online` (also retained) right after a successful CONNACK, before
+      any device publish; `build_ha_presence_publishes()`'s new
+      `availability_topic` parameter adds it to every entity's discovery
+      config so Home Assistant actually watches it. On by default whenever
+      `--mqtt-host` is given (no separate opt-in flag needed - it's a
+      correctness fix to the existing feature, not new behavior someone
+      would want off); `--mqtt-no-availability` opts back out, matching
+      this project's usual `--no-X` convention for disabling a default-on
+      behavior. Verified end-to-end against a real, unmocked TCP fake
+      broker on both scripts: the actual CONNECT packet sent over the wire
+      carries the Will Flag/Will Retain bits and the exact topic/payload
+      bytes, "online" is published before any device topic, and omitting
+      `availability_topic` produces a CONNECT with no Will bits at all and
+      no extra publishes - the MQTT Last Will's own broker-side delivery
+      (an uncleanly-dropped connection actually triggering the `offline`
+      publish) isn't something a client-side test can observe at all,
+      since that part is entirely the *broker's* job per the spec, not
+      code in these scripts.
+
+- [ ] **Cut a release tag.** All 26 ideas in this file are checked off as
+      of the MQTT/profiles/metrics/registry-export round - a natural point
+      to tag `v1.0.0` (or start a `CHANGELOG.md`) so the project's history
+      isn't just a flat commit log for anyone picking this repo up later.
+
+- [ ] **Example systemd unit for `--watch` as a service.** Now that both
+      `--metrics-file` and `--mqtt-host` exist, the natural next step for
+      someone using either is running `--watch` unattended on an always-on
+      machine rather than in a terminal. A documented example
+      `.service`/`.timer` pair (or a plain `ExecStart=... --watch 300
+      --metrics-file ... --mqtt-host ...` one-liner) in the README would
+      save that setup work, the same spirit as the shell-completion script
+      saving the flag-memorization work.
+
 ## `mobile_network_scanner.py`-specific
 
 Several of the ideas above only got built for `network_scanner.py`. Most

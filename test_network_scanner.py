@@ -2429,6 +2429,55 @@ class TestMqttPackets:
     def test_disconnect_packet_is_the_fixed_two_byte_mqtt_constant(self):
         assert ns._MQTT_DISCONNECT_PACKET == bytes([0xE0, 0x00])
 
+    def test_connect_packet_omits_will_flag_by_default(self):
+        packet = ns._mqtt_connect_packet("client1")
+
+        connect_flags = packet[9]
+        assert not (connect_flags & 0x04)
+        assert not (connect_flags & 0x20)
+
+    def test_connect_packet_sets_will_flag_when_will_topic_given(self):
+        packet = ns._mqtt_connect_packet("client1", will_topic="a/availability", will_payload=b"offline")
+
+        connect_flags = packet[9]
+        assert connect_flags & 0x04  # Will Flag
+
+    def test_connect_packet_sets_will_retain_flag_when_requested(self):
+        packet = ns._mqtt_connect_packet("client1", will_topic="a/availability", will_payload=b"offline", will_retain=True)
+
+        connect_flags = packet[9]
+        assert connect_flags & 0x20  # Will Retain
+
+    def test_connect_packet_omits_will_retain_flag_when_not_requested(self):
+        packet = ns._mqtt_connect_packet("client1", will_topic="a/availability", will_payload=b"offline", will_retain=False)
+
+        connect_flags = packet[9]
+        assert not (connect_flags & 0x20)
+
+    def test_connect_packet_contains_the_will_topic_and_payload(self):
+        packet = ns._mqtt_connect_packet("client1", will_topic="a/availability", will_payload=b"offline")
+
+        assert b"a/availability" in packet
+        assert packet.endswith(b"offline")
+
+    def test_connect_packet_will_fields_precede_username_and_password(self):
+        # Per the MQTT 3.1.1 payload ordering: Client ID, Will Topic, Will
+        # Message, User Name, Password - a wrong order would silently
+        # corrupt every field the broker parses after the misplaced one.
+        packet = ns._mqtt_connect_packet(
+            "c", username="bob", password="secret", will_topic="a/availability", will_payload=b"offline",
+        )
+
+        assert packet.index(b"a/availability") < packet.index(b"bob") < packet.index(b"secret")
+
+
+class TestMqttAvailabilityTopic:
+    def test_builds_the_expected_topic(self):
+        assert ns.mqtt_availability_topic("homeassistant", "network_scanner") == "homeassistant/network_scanner/availability"
+
+    def test_respects_a_custom_prefix_and_node_id(self):
+        assert ns.mqtt_availability_topic("custom", "mynode") == "custom/mynode/availability"
+
 
 class TestMqttSafeId:
     def test_replaces_colons_in_a_mac_address(self):
@@ -2493,6 +2542,22 @@ class TestBuildHaPresencePublishes:
 
         assert publishes[0][0].startswith("custom/binary_sensor/mynode_")
 
+    def test_adds_availability_topic_to_config_when_given(self):
+        devices = [{"ip": "192.168.1.1", "mac": "aa:bb:cc:dd:ee:ff"}]
+
+        publishes = ns.build_ha_presence_publishes(devices, availability_topic="homeassistant/network_scanner/availability")
+        config = json.loads(next(payload for topic, payload, _r in publishes if topic.endswith("/config")))
+
+        assert config["availability_topic"] == "homeassistant/network_scanner/availability"
+
+    def test_omits_availability_topic_from_config_when_not_given(self):
+        devices = [{"ip": "192.168.1.1", "mac": "aa:bb:cc:dd:ee:ff"}]
+
+        publishes = ns.build_ha_presence_publishes(devices)
+        config = json.loads(next(payload for topic, payload, _r in publishes if topic.endswith("/config")))
+
+        assert "availability_topic" not in config
+
 
 class TestBuildHaAbsencePublishes:
     def test_builds_one_off_state_publish_per_missing_device(self):
@@ -2519,11 +2584,11 @@ class TestPublishMqtt:
         server.bind(("127.0.0.1", 0))
         server.listen(1)
         port = server.getsockname()[1]
-        received = {"data": b""}
+        received = {"data": b"", "connect": b""}
 
         def serve():
             conn, _addr = server.accept()
-            conn.recv(4096)  # CONNECT
+            received["connect"] = conn.recv(4096)  # CONNECT
             if respond_ok:
                 conn.sendall(bytes([0x20, 0x02, 0x00, 0x00]))
             else:
@@ -2576,6 +2641,153 @@ class TestPublishMqtt:
 
         with pytest.raises(OSError):
             ns.publish_mqtt("127.0.0.1", port, "test-client", [], timeout=1.0)
+
+    def test_availability_topic_sets_will_bits_in_connect(self):
+        port, thread, received = self._run_fake_broker()
+
+        ns.publish_mqtt(
+            "127.0.0.1", port, "test-client", [("a/b", b"hello", False)],
+            availability_topic="homeassistant/test-client/availability",
+        )
+        thread.join(timeout=2)
+
+        assert b"homeassistant/test-client/availability" in received["connect"]
+        assert received["connect"].endswith(b"offline")  # the will payload
+        connect_flags = received["connect"][9]
+        assert connect_flags & 0x04  # Will Flag
+        assert connect_flags & 0x20  # Will Retain
+
+    def test_availability_topic_is_published_online_before_other_publishes(self):
+        port, thread, received = self._run_fake_broker()
+
+        ns.publish_mqtt(
+            "127.0.0.1", port, "test-client", [("a/b", b"hello", False)],
+            availability_topic="homeassistant/test-client/availability",
+        )
+        thread.join(timeout=2)
+
+        online_index = received["data"].index(b"online")
+        hello_index = received["data"].index(b"hello")
+        assert online_index < hello_index
+
+    def test_no_availability_topic_means_no_will_bits(self):
+        port, thread, received = self._run_fake_broker()
+
+        ns.publish_mqtt("127.0.0.1", port, "test-client", [("a/b", b"hello", False)])
+        thread.join(timeout=2)
+
+        connect_flags = received["connect"][9]
+        assert not (connect_flags & 0x04)
+        assert b"availability" not in received["data"]
+        assert b"online" not in received["data"]
+
+
+class TestPublishMqttTls:
+    """Socket/SSL wiring verified with mocks (rather than a real cert/handshake,
+    which would need shelling out to openssl or a new cryptography dependency
+    just for tests) - a real TLS handshake against a real self-signed
+    certificate over a real loopback socket *was* manually verified during
+    development; see TODO.md for why that isn't part of the committed suite."""
+
+    def _make_fake_raw_socket(self, connack=bytes([0x20, 0x02, 0x00, 0x00])):
+        fake_raw = MagicMock()
+        fake_wrapped = MagicMock()
+        fake_wrapped.recv.return_value = connack
+        return fake_raw, fake_wrapped
+
+    def test_use_tls_wraps_the_socket_with_an_ssl_context(self):
+        fake_raw, fake_wrapped = self._make_fake_raw_socket()
+        fake_context = MagicMock()
+        fake_context.wrap_socket.return_value = fake_wrapped
+
+        with patch.object(ns.socket, "create_connection", return_value=fake_raw), \
+             patch.object(ns.ssl, "create_default_context", return_value=fake_context) as mock_ctx:
+            ns.publish_mqtt("broker.example", 8883, "client", [], use_tls=True)
+
+        mock_ctx.assert_called_once()
+        fake_context.wrap_socket.assert_called_once_with(fake_raw, server_hostname="broker.example")
+        fake_wrapped.sendall.assert_called()  # the wrapped socket, not the raw one, does the actual talking
+
+    def test_plain_connection_never_touches_ssl(self):
+        fake_raw, _fake_wrapped = self._make_fake_raw_socket()
+        fake_raw.recv.return_value = bytes([0x20, 0x02, 0x00, 0x00])
+
+        with patch.object(ns.socket, "create_connection", return_value=fake_raw), \
+             patch.object(ns.ssl, "create_default_context") as mock_ctx:
+            ns.publish_mqtt("broker.example", 1883, "client", [], use_tls=False)
+
+        mock_ctx.assert_not_called()
+
+    def test_insecure_tls_disables_hostname_and_certificate_verification(self):
+        fake_raw, fake_wrapped = self._make_fake_raw_socket()
+        fake_context = MagicMock()
+        fake_context.wrap_socket.return_value = fake_wrapped
+
+        with patch.object(ns.socket, "create_connection", return_value=fake_raw), \
+             patch.object(ns.ssl, "create_default_context", return_value=fake_context):
+            ns.publish_mqtt("broker.example", 8883, "client", [], use_tls=True, insecure_tls=True)
+
+        assert fake_context.check_hostname is False
+        assert fake_context.verify_mode == ns.ssl.CERT_NONE
+
+    def test_secure_tls_leaves_default_verification_alone(self):
+        fake_raw, fake_wrapped = self._make_fake_raw_socket()
+        fake_context = MagicMock()
+        fake_context.wrap_socket.return_value = fake_wrapped
+        fake_context.check_hostname = True  # ssl.create_default_context()'s own real default
+
+        with patch.object(ns.socket, "create_connection", return_value=fake_raw), \
+             patch.object(ns.ssl, "create_default_context", return_value=fake_context):
+            ns.publish_mqtt("broker.example", 8883, "client", [], use_tls=True, insecure_tls=False)
+
+        assert fake_context.check_hostname is True
+
+    def test_closes_the_wrapped_socket_not_the_raw_one(self):
+        fake_raw, fake_wrapped = self._make_fake_raw_socket()
+        fake_context = MagicMock()
+        fake_context.wrap_socket.return_value = fake_wrapped
+
+        with patch.object(ns.socket, "create_connection", return_value=fake_raw), \
+             patch.object(ns.ssl, "create_default_context", return_value=fake_context):
+            ns.publish_mqtt("broker.example", 8883, "client", [], use_tls=True)
+
+        fake_wrapped.close.assert_called_once()
+
+
+class TestResolveMqttPassword:
+    def test_explicit_password_wins_over_everything(self, tmp_path, monkeypatch):
+        password_file = tmp_path / "pw.txt"
+        password_file.write_text("from-file\n", encoding="utf-8")
+        monkeypatch.setenv("MQTT_PASSWORD", "from-env")
+
+        assert ns._resolve_mqtt_password("from-flag", str(password_file)) == "from-flag"
+
+    def test_falls_back_to_password_file_when_no_explicit_password(self, tmp_path, monkeypatch):
+        password_file = tmp_path / "pw.txt"
+        password_file.write_text("from-file\n", encoding="utf-8")
+        monkeypatch.setenv("MQTT_PASSWORD", "from-env")
+
+        assert ns._resolve_mqtt_password(None, str(password_file)) == "from-file"
+
+    def test_password_file_contents_are_stripped(self, tmp_path):
+        password_file = tmp_path / "pw.txt"
+        password_file.write_text("  from-file  \n", encoding="utf-8")
+
+        assert ns._resolve_mqtt_password(None, str(password_file)) == "from-file"
+
+    def test_falls_back_to_env_var_when_neither_flag_nor_file_given(self, monkeypatch):
+        monkeypatch.setenv("MQTT_PASSWORD", "from-env")
+
+        assert ns._resolve_mqtt_password(None, None) == "from-env"
+
+    def test_returns_none_when_nothing_is_configured(self, monkeypatch):
+        monkeypatch.delenv("MQTT_PASSWORD", raising=False)
+
+        assert ns._resolve_mqtt_password(None, None) is None
+
+    def test_raises_when_password_file_does_not_exist(self, tmp_path):
+        with pytest.raises(OSError):
+            ns._resolve_mqtt_password(None, str(tmp_path / "missing.txt"))
 
 
 class TestMainDiffOnly:
@@ -2757,3 +2969,116 @@ class TestMainMqtt:
             ns.main()  # Should not raise.
 
         assert "MQTT publish failed" in capsys.readouterr().err
+
+    def test_default_publish_includes_an_availability_topic(self, tmp_path, monkeypatch):
+        known_path = tmp_path / "known.json"
+        devices = [{"ip": "192.168.1.1", "mac": "aa:bb:cc:dd:ee:ff", "hostname": "router", "vendor": "", "port": 80, "risky_ports": []}]
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["network_scanner.py", "192.168.1.0/24", "--mqtt-host", "broker.local", "--no-color", "--quiet"],
+        )
+        with patch.object(ns, "_KNOWN_DEVICES_PATH", known_path), \
+             patch.object(ns, "scan_all_subnets", return_value=devices), \
+             patch.object(ns, "publish_mqtt") as mock_publish:
+            ns.main()
+
+        assert mock_publish.call_args.kwargs["availability_topic"] == "homeassistant/network_scanner/availability"
+
+    def test_mqtt_no_availability_flag_disables_it(self, tmp_path, monkeypatch):
+        known_path = tmp_path / "known.json"
+        devices = [{"ip": "192.168.1.1", "mac": "aa:bb:cc:dd:ee:ff", "hostname": "router", "vendor": "", "port": 80, "risky_ports": []}]
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["network_scanner.py", "192.168.1.0/24", "--mqtt-host", "broker.local", "--mqtt-no-availability", "--no-color", "--quiet"],
+        )
+        with patch.object(ns, "_KNOWN_DEVICES_PATH", known_path), \
+             patch.object(ns, "scan_all_subnets", return_value=devices), \
+             patch.object(ns, "publish_mqtt") as mock_publish:
+            ns.main()
+
+        assert mock_publish.call_args.kwargs["availability_topic"] is None
+        config = json.loads(next(p for t, p, _r in mock_publish.call_args.args[3] if t.endswith("/config")))
+        assert "availability_topic" not in config
+
+    def test_mqtt_tls_flags_are_passed_through(self, tmp_path, monkeypatch):
+        known_path = tmp_path / "known.json"
+        devices = [{"ip": "192.168.1.1", "mac": "aa:bb:cc:dd:ee:ff", "hostname": "router", "vendor": "", "port": 80, "risky_ports": []}]
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["network_scanner.py", "192.168.1.0/24", "--mqtt-host", "broker.local", "--mqtt-tls",
+             "--mqtt-insecure-tls", "--no-color", "--quiet"],
+        )
+        with patch.object(ns, "_KNOWN_DEVICES_PATH", known_path), \
+             patch.object(ns, "scan_all_subnets", return_value=devices), \
+             patch.object(ns, "publish_mqtt") as mock_publish:
+            ns.main()
+
+        assert mock_publish.call_args.kwargs["use_tls"] is True
+        assert mock_publish.call_args.kwargs["insecure_tls"] is True
+
+    def test_mqtt_password_file_is_used_when_no_explicit_password(self, tmp_path, monkeypatch):
+        known_path = tmp_path / "known.json"
+        password_file = tmp_path / "pw.txt"
+        password_file.write_text("secret-from-file\n", encoding="utf-8")
+        devices = [{"ip": "192.168.1.1", "mac": "aa:bb:cc:dd:ee:ff", "hostname": "router", "vendor": "", "port": 80, "risky_ports": []}]
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["network_scanner.py", "192.168.1.0/24", "--mqtt-host", "broker.local",
+             "--mqtt-password-file", str(password_file), "--no-color", "--quiet"],
+        )
+        with patch.object(ns, "_KNOWN_DEVICES_PATH", known_path), \
+             patch.object(ns, "scan_all_subnets", return_value=devices), \
+             patch.object(ns, "publish_mqtt") as mock_publish:
+            ns.main()
+
+        assert mock_publish.call_args.kwargs["password"] == "secret-from-file"
+
+    def test_explicit_mqtt_password_overrides_password_file(self, tmp_path, monkeypatch):
+        known_path = tmp_path / "known.json"
+        password_file = tmp_path / "pw.txt"
+        password_file.write_text("secret-from-file\n", encoding="utf-8")
+        devices = [{"ip": "192.168.1.1", "mac": "aa:bb:cc:dd:ee:ff", "hostname": "router", "vendor": "", "port": 80, "risky_ports": []}]
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["network_scanner.py", "192.168.1.0/24", "--mqtt-host", "broker.local", "--mqtt-password", "explicit-secret",
+             "--mqtt-password-file", str(password_file), "--no-color", "--quiet"],
+        )
+        with patch.object(ns, "_KNOWN_DEVICES_PATH", known_path), \
+             patch.object(ns, "scan_all_subnets", return_value=devices), \
+             patch.object(ns, "publish_mqtt") as mock_publish:
+            ns.main()
+
+        assert mock_publish.call_args.kwargs["password"] == "explicit-secret"
+
+    def test_mqtt_password_env_var_is_used_as_a_last_resort(self, tmp_path, monkeypatch):
+        known_path = tmp_path / "known.json"
+        devices = [{"ip": "192.168.1.1", "mac": "aa:bb:cc:dd:ee:ff", "hostname": "router", "vendor": "", "port": 80, "risky_ports": []}]
+        monkeypatch.setenv("MQTT_PASSWORD", "secret-from-env")
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["network_scanner.py", "192.168.1.0/24", "--mqtt-host", "broker.local", "--no-color", "--quiet"],
+        )
+        with patch.object(ns, "_KNOWN_DEVICES_PATH", known_path), \
+             patch.object(ns, "scan_all_subnets", return_value=devices), \
+             patch.object(ns, "publish_mqtt") as mock_publish:
+            ns.main()
+
+        assert mock_publish.call_args.kwargs["password"] == "secret-from-env"
+
+    def test_missing_mqtt_password_file_is_a_usage_error(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(
+            sys, "argv",
+            ["network_scanner.py", "192.168.1.0/24", "--mqtt-host", "broker.local",
+             "--mqtt-password-file", str(tmp_path / "missing.txt"), "--doctor"],
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            ns.main()
+
+        assert excinfo.value.code == 2
+        assert "mqtt-password-file" in capsys.readouterr().err

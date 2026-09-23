@@ -36,14 +36,14 @@
 
 _network_scanner_completions() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
-    local opts="-h --help --all-subnets --identify --doctor --timeout --retries --mdns-timeout --no-vendor-lookup --refresh-vendor-db --watch --no-track-devices --forget-known-devices --set-label --remove-label --ipv6 --ipv6-timeout --no-scan-ports --ports --exclude --port-timeout --no-risky-ports --no-color --output --quiet --notify-webhook --log-history --history-max-entries --diff-only --profile --profile-file --metrics-file --export-known-devices --import-known-devices --mqtt-host --mqtt-port --mqtt-username --mqtt-password --mqtt-client-id --mqtt-discovery-prefix"
+    local opts="-h --help --all-subnets --identify --doctor --timeout --retries --mdns-timeout --no-vendor-lookup --refresh-vendor-db --watch --no-track-devices --forget-known-devices --set-label --remove-label --ipv6 --ipv6-timeout --no-scan-ports --ports --exclude --port-timeout --no-risky-ports --no-color --output --quiet --notify-webhook --log-history --history-max-entries --diff-only --profile --profile-file --metrics-file --export-known-devices --import-known-devices --mqtt-host --mqtt-port --mqtt-username --mqtt-password --mqtt-password-file --mqtt-client-id --mqtt-discovery-prefix --mqtt-tls --mqtt-insecure-tls --mqtt-no-availability"
     COMPREPLY=($(compgen -W "${opts}" -- "${cur}"))
 }
 complete -F _network_scanner_completions network_scanner.py
 
 _mobile_network_scanner_completions() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
-    local opts="-h --help --timeout --retries --ports --exclude --mdns-timeout --doctor --watch --no-track-devices --forget-known-devices --set-label --remove-label --no-banners --no-risky-ports --no-color --output --quiet --notify-webhook --log-history --history-max-entries --diff-only --profile --profile-file --metrics-file --export-known-devices --import-known-devices --mqtt-host --mqtt-port --mqtt-username --mqtt-password --mqtt-client-id --mqtt-discovery-prefix"
+    local opts="-h --help --timeout --retries --ports --exclude --mdns-timeout --doctor --watch --no-track-devices --forget-known-devices --set-label --remove-label --no-banners --no-risky-ports --no-color --output --quiet --notify-webhook --log-history --history-max-entries --diff-only --profile --profile-file --metrics-file --export-known-devices --import-known-devices --mqtt-host --mqtt-port --mqtt-username --mqtt-password --mqtt-password-file --mqtt-client-id --mqtt-discovery-prefix --mqtt-tls --mqtt-insecure-tls --mqtt-no-availability"
     COMPREPLY=($(compgen -W "${opts}" -- "${cur}"))
 }
 complete -F _mobile_network_scanner_completions mobile_network_scanner.py

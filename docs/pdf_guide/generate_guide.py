@@ -499,11 +499,15 @@ python3 network_scanner.py --output scan.json  # save results to a file"""))
         ("--export-known-devices FILE", "Copy the known-devices registry to FILE and exit without scanning."),
         ("--import-known-devices FILE", "Merge FILE's known-devices registry into the current one (imported entries win on a collision) and exit without scanning."),
         ("--mqtt-host HOST", "Publish Home Assistant MQTT Discovery presence for every device found to this broker."),
-        ("--mqtt-port PORT", "MQTT broker port (default: 1883)."),
+        ("--mqtt-port PORT", "MQTT broker port (default: 1883, or 8883 is common with --mqtt-tls)."),
         ("--mqtt-username USER", "MQTT broker username, if required."),
-        ("--mqtt-password PASS", "MQTT broker password, if required."),
+        ("--mqtt-password PASS", "MQTT broker password, if required - visible in ps/shell history; prefer --mqtt-password-file or $MQTT_PASSWORD."),
+        ("--mqtt-password-file FILE", "Read the MQTT broker password from FILE instead of --mqtt-password."),
         ("--mqtt-client-id ID", "MQTT client ID (default: network_scanner)."),
         ("--mqtt-discovery-prefix PREFIX", "Home Assistant's MQTT Discovery topic prefix (default: homeassistant)."),
+        ("--mqtt-tls", "Connect to the MQTT broker over TLS instead of plain TCP."),
+        ("--mqtt-insecure-tls", "Under --mqtt-tls, skip certificate hostname/chain verification (typical for a self-signed home broker)."),
+        ("--mqtt-no-availability", "Don't publish an online/offline availability topic or set an MQTT Last Will alongside device presence."),
     ]
     story.append(options_table(desktop_flags))
 
@@ -557,11 +561,15 @@ python3 mobile_network_scanner.py --output scan.csv  # save results to a file"""
         ("--export-known-devices FILE", "Copy the known-devices registry to FILE and exit without scanning."),
         ("--import-known-devices FILE", "Merge FILE's known-devices registry into the current one (imported entries win on a collision) and exit without scanning."),
         ("--mqtt-host HOST", "Publish Home Assistant MQTT Discovery presence for every device found to this broker."),
-        ("--mqtt-port PORT", "MQTT broker port (default: 1883)."),
+        ("--mqtt-port PORT", "MQTT broker port (default: 1883, or 8883 is common with --mqtt-tls)."),
         ("--mqtt-username USER", "MQTT broker username, if required."),
-        ("--mqtt-password PASS", "MQTT broker password, if required."),
+        ("--mqtt-password PASS", "MQTT broker password, if required - visible in ps/shell history; prefer --mqtt-password-file or $MQTT_PASSWORD."),
+        ("--mqtt-password-file FILE", "Read the MQTT broker password from FILE instead of --mqtt-password."),
         ("--mqtt-client-id ID", "MQTT client ID (default: mobile_network_scanner)."),
         ("--mqtt-discovery-prefix PREFIX", "Home Assistant's MQTT Discovery topic prefix (default: homeassistant)."),
+        ("--mqtt-tls", "Connect to the MQTT broker over TLS instead of plain TCP."),
+        ("--mqtt-insecure-tls", "Under --mqtt-tls, skip certificate hostname/chain verification (typical for a self-signed home broker)."),
+        ("--mqtt-no-availability", "Don't publish an online/offline availability topic or set an MQTT Last Will alongside device presence."),
     ]
     story.append(options_table(mobile_flags))
 
