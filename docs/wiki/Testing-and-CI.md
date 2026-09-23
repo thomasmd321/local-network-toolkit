@@ -56,6 +56,7 @@ on:
     branches: ["**"]
   pull_request:
     branches: ["**"]
+  workflow_dispatch: {}
 ```
 
 `branches: ["**"]` means **every** branch, not just `main` — so CI is
@@ -65,10 +66,20 @@ the moment you either
 - **push a commit to any branch** on GitHub (`git push origin your-branch`), or
 - **open a pull request** (updating an existing PR re-triggers it too).
 
-There's currently no manual "Run workflow" button (that needs a
-`workflow_dispatch:` trigger added to the `on:` block, which this file
-doesn't have) — the push/PR triggers above are the only way to start a
-run today. To watch a run once it's started:
+There's also a manual "Run workflow" button (`workflow_dispatch: {}`) for
+starting a run with no code change at all — the `{}` means it takes no
+inputs, just a plain trigger. Use it from:
+
+```
+# GitHub CLI, if you have it:
+gh workflow run tests.yml
+
+# or in a browser:
+https://github.com/thomasmd321/local-network-toolkit/actions/workflows/tests.yml
+# → "Run workflow" dropdown, pick a branch, click "Run workflow"
+```
+
+To watch a run once it's started (whichever way it was triggered):
 
 ```
 # GitHub CLI, if you have it:
@@ -79,13 +90,10 @@ gh run watch
 https://github.com/thomasmd321/local-network-toolkit/actions
 ```
 
-If you want to re-run CI on a commit without changing any code (e.g. to
-confirm a flaky failure), open that run in the Actions tab and use its
-"Re-run jobs" button — that re-runs the existing commit's workflow rather
-than needing a new push. An empty commit
-(`git commit --allow-empty -m "..." && git push`) is a real, if blunt,
-alternative that also works, though it leaves a no-op commit in the
-history purely to force a re-run.
+To re-run CI on a commit without changing any code (e.g. to confirm a
+flaky failure), open that run in the Actions tab and use its "Re-run
+jobs" button — that re-runs the existing commit's workflow rather than
+needing a new push or a fresh `workflow_dispatch`.
 
 ## What's mocked vs. verified for real
 
