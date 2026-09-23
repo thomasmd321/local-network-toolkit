@@ -34,6 +34,18 @@ Network Privacy model. See [[Mobile Network
 Scanner|Mobile-Network-Scanner]]'s "Known limitation on iOS" section and
 [[mDNS Diagnostic|mDNS-Diagnostic]].
 
+**Hardened against a real DoS**: `_decode_dns_name()`'s compression-pointer
+handling had no cycle guard until a repo-wide review caught it — two
+pointers referencing each other (a malformed or hostile packet from any
+device on the LAN) caused a genuine, reproduced infinite loop, hanging
+this script indefinitely on one bad response. Fixed by tracking visited
+pointer offsets and treating a revisited offset as the end of a truncated
+name, the same graceful-degrade-on-malformed-data spirit
+`_iter_mdns_records()` already used elsewhere in this function's own file.
+The identical fix landed in [[Network Scanner|Network-Scanner]], [[Mobile
+Network Scanner|Mobile-Network-Scanner]], and [[DNS Check|DNS-Check]],
+which all duplicate this same decoder.
+
 ## See also
 
 - [[mDNS Diagnostic|mDNS-Diagnostic]]

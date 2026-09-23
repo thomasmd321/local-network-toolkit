@@ -37,6 +37,15 @@ way HTTPS is — a real run against the actual Cloudflare/Google/Quad9
 resolvers worked end to end too, correctly returning NXDOMAIN for a fresh
 canary and agreeing on `example.com`'s real answer.
 
+**Hardened against a real DoS**: `_decode_dns_name()` had no guard against
+a DNS compression-pointer cycle until a repo-wide review caught and fixed
+it — a real, reproduced infinite loop, and in this tool's case reachable
+by exactly the kind of hijacking/malicious resolver it exists to detect
+(transaction-ID matching doesn't block it, since a hijacking resolver is
+genuinely answering your query, just falsely). See [[mDNS
+Browser|mDNS-Browser]] for the fix's details, shared verbatim across all
+four scripts with this decoder.
+
 ## See also
 
 - [[Troubleshooting]]

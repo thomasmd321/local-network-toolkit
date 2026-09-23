@@ -105,6 +105,12 @@ python mdns_diagnostic.py
 See [[mDNS Diagnostic|mDNS-Diagnostic]] for what this standalone script
 checks.
 
+**Hardened against a real DoS**: the mDNS `_decode_dns_name()` helper this
+script uses for hostname/Cast-name resolution had no guard against a DNS
+compression-pointer cycle until a repo-wide review caught and fixed it —
+see [[mDNS Browser|mDNS-Browser]] for details (a genuine, reproduced
+infinite loop, not a theoretical concern).
+
 ## Running on iPhone
 
 See [[Getting Started|Getting-Started]] for the a-Shell install/curl steps.

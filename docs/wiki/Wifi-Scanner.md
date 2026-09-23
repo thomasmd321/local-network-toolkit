@@ -43,6 +43,15 @@ python wifi_scanner.py --no-evil-twin-check
 python wifi_scanner.py --forget-known-networks
 ```
 
+The registry keys purely by SSID (not by location), so a downgrade
+reported from a **brand-new BSSID** gets softer wording than one from a
+BSSID already known under that SSID — a repo-wide review caught that the
+combination of "weaker security" and "never-seen BSSID" is also exactly
+what scanning an unrelated network that happens to reuse a common SSID
+(a hotel or coffee-shop name, a default router SSID) looks like, so that
+case's message now says it could be either, rather than asserting a
+"classic evil-twin/downgrade pattern" with no hedge.
+
 ## Known limitation, stated plainly
 
 The parsing for all three platforms is verified only against mocked

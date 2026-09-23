@@ -109,6 +109,12 @@ HTTP probe if nothing arrived, since plenty of IoT admin UIs run HTTP on
 non-standard ports. Not every service says anything at all: binary
 protocols like SMB or RDP report no banner, the same as a closed port would.
 
+**Hardened against a real DoS**: the mDNS `_decode_dns_name()` helper this
+script uses for hostname resolution had no guard against a DNS
+compression-pointer cycle until a repo-wide review caught and fixed it —
+see [[mDNS Browser|mDNS-Browser]] for details (a genuine, reproduced
+infinite loop, not a theoretical concern).
+
 ## See also
 
 - [[Known-Device Tracking & Watch Mode|Known-Device-Tracking-and-Watch-Mode]]
