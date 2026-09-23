@@ -353,16 +353,35 @@ def _find_evil_twin_candidates(networks: List[Network], known: Dict[str, dict]) 
 
         current_rank = _security_rank(network["security"])
         best_known_rank = entry.get("best_security_rank", 0)
+        is_new_bssid = network["bssid"] not in entry.get("bssids", [])
         if current_rank < best_known_rank:
-            candidates.append({
-                "ssid": ssid, "bssid": network["bssid"], "kind": "security_downgrade",
-                "detail": (
+            if is_new_bssid:
+                # A weaker security level *and* a BSSID never seen before
+                # under this SSID, together, are also exactly what scanning
+                # a completely different, unrelated network that happens to
+                # reuse a common SSID (a hotel/coffee-shop name, a default
+                # router SSID) looks like - this registry only ever keys by
+                # SSID (see _update_known_networks()), so it has no way to
+                # tell "this AP got weaker" from "this is a different AP
+                # entirely, coincidentally sharing a name." Worded more
+                # cautiously than the same-BSSID case below for that reason.
+                detail = (
+                    f"{ssid} previously showed stronger security ({entry.get('best_security') or 'Open'}) "
+                    f"but a new access point ({network['bssid']}) is now answering as {network['security'] or 'Open'} - "
+                    "could be an evil-twin/downgrade attack, or just a different network that happens to reuse this SSID"
+                )
+            else:
+                # Same BSSID as before, weaker security now - a much
+                # stronger signal, since this is the identical hardware
+                # address suddenly answering with less security than it
+                # ever has, not a name collision with something else.
+                detail = (
                     f"{ssid} previously showed stronger security ({entry.get('best_security') or 'Open'}) "
                     f"but is now answering as {network['security'] or 'Open'} from {network['bssid']} - "
                     "a classic evil-twin/downgrade pattern"
-                ),
-            })
-        elif network["bssid"] not in entry.get("bssids", []):
+                )
+            candidates.append({"ssid": ssid, "bssid": network["bssid"], "kind": "security_downgrade", "detail": detail})
+        elif is_new_bssid:
             candidates.append({
                 "ssid": ssid, "bssid": network["bssid"], "kind": "new_bssid",
                 "detail": (

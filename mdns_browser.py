@@ -116,6 +116,7 @@ def _decode_dns_name(message: bytes, offset: int) -> Tuple[str, int]:
     """
     labels = []
     return_offset = None
+    seen_pointers = set()  # Guards against a compression-pointer cycle (a malformed/hostile packet).
 
     while True:
         length = message[offset]
@@ -125,6 +126,9 @@ def _decode_dns_name(message: bytes, offset: int) -> Tuple[str, int]:
             break
 
         if length & 0xC0 == 0xC0:
+            if offset in seen_pointers:
+                break  # Cycle - stop with whatever labels were collected so far instead of looping forever.
+            seen_pointers.add(offset)
             pointer = struct.unpack(">H", message[offset:offset + 2])[0] & 0x3FFF
             if return_offset is None:
                 return_offset = offset + 2

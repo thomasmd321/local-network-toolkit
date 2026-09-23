@@ -7,6 +7,21 @@ from unittest.mock import MagicMock, patch
 import mdns_browser as mb
 
 
+class TestDecodeDnsName:
+    def test_a_compression_pointer_cycle_terminates_instead_of_hanging(self):
+        # Two pointers referencing each other - a malformed/hostile packet
+        # that would loop forever without a cycle guard. This is a real
+        # regression test: it previously hung this call indefinitely.
+        message = bytearray(20)
+        message[12:14] = bytes([0xC0, 14])  # offset 12 -> jumps to 14
+        message[14:16] = bytes([0xC0, 12])  # offset 14 -> jumps back to 12
+
+        name, offset = mb._decode_dns_name(bytes(message), 12)
+
+        assert name == ""
+        assert offset == 14
+
+
 class TestBuildMdnsPtrQuery:
     def test_builds_a_well_formed_single_question_query(self):
         query = mb._build_mdns_ptr_query("_googlecast._tcp.local")

@@ -32,6 +32,20 @@ class TestEncodeDecodeDnsName:
         assert name == "example.com"
         assert offset == 12 + len(first) + 2  # resumes right after the 2-byte pointer
 
+    def test_a_compression_pointer_cycle_terminates_instead_of_hanging(self):
+        # Two pointers referencing each other - a malicious/hijacking
+        # resolver's reply that would loop forever without a cycle guard.
+        # This is a real regression test: it previously hung this call
+        # indefinitely.
+        message = bytearray(20)
+        message[12:14] = bytes([0xC0, 14])  # offset 12 -> jumps to 14
+        message[14:16] = bytes([0xC0, 12])  # offset 14 -> jumps back to 12
+
+        name, offset = dc._decode_dns_name(bytes(message), 12)
+
+        assert name == ""
+        assert offset == 14
+
 
 class TestBuildDnsQuery:
     def test_sets_recursion_desired_and_one_question(self):

@@ -122,6 +122,7 @@ def _decode_dns_name(message: bytes, offset: int) -> Tuple[str, int]:
     """Decode a (possibly compressed) DNS name starting at offset in message - same algorithm as mobile_network_scanner.py's own copy, which see for the compression-pointer explanation."""
     labels = []
     return_offset = None
+    seen_pointers = set()  # Guards against a compression-pointer cycle - see network_scanner.py's own copy for why.
 
     while True:
         length = message[offset]
@@ -131,6 +132,9 @@ def _decode_dns_name(message: bytes, offset: int) -> Tuple[str, int]:
             break
 
         if length & 0xC0 == 0xC0:
+            if offset in seen_pointers:
+                break  # Cycle - a hijacking resolver's own reply could otherwise hang this check forever.
+            seen_pointers.add(offset)
             pointer = struct.unpack(">H", message[offset:offset + 2])[0] & 0x3FFF
             if return_offset is None:
                 return_offset = offset + 2

@@ -342,6 +342,23 @@ class TestFindEvilTwinCandidates:
         assert len(candidates) == 1
         assert candidates[0]["kind"] == "security_downgrade"
         assert candidates[0]["ssid"] == "MyWiFi"
+        assert "classic evil-twin/downgrade pattern" in candidates[0]["detail"]
+
+    def test_a_downgrade_from_a_new_bssid_uses_softer_wording(self):
+        # A weaker security level *and* a BSSID never seen before, together,
+        # are also exactly what scanning a different, unrelated network
+        # that happens to reuse the same SSID looks like - this should
+        # still be flagged as security_downgrade, but not asserted as
+        # confidently as the same-BSSID case above.
+        networks = [{"ssid": "MyWiFi", "bssid": "11:22:33:44:55:66", "channel": 6, "signal": "78%", "security": "Open"}]
+        known = {"MyWiFi": {"bssids": ["aa:bb:cc:dd:ee:ff"], "best_security": "WPA2", "best_security_rank": 3}}
+
+        candidates = ws._find_evil_twin_candidates(networks, known)
+
+        assert len(candidates) == 1
+        assert candidates[0]["kind"] == "security_downgrade"
+        assert "classic evil-twin/downgrade pattern" not in candidates[0]["detail"]
+        assert "different network" in candidates[0]["detail"]
 
     def test_flags_a_new_bssid_for_a_known_ssid_with_unchanged_security(self):
         networks = [{"ssid": "MyWiFi", "bssid": "11:22:33:44:55:66", "channel": 6, "signal": "78%", "security": "WPA2"}]

@@ -544,6 +544,7 @@ def _decode_dns_name(message: bytes, offset: int) -> Tuple[str, int]:
     """
     labels = []
     return_offset = None  # Where to resume after this name, once known.
+    seen_pointers = set()  # Guards against a compression-pointer cycle - see below.
 
     while True:
         length = message[offset]
@@ -553,6 +554,18 @@ def _decode_dns_name(message: bytes, offset: int) -> Tuple[str, int]:
             break
 
         if length & 0xC0 == 0xC0:
+            if offset in seen_pointers:
+                # A pointer that jumps back to an offset already followed
+                # from this same name means a cycle - a spec-compliant
+                # name always terminates, so only a malformed or hostile
+                # packet does this (e.g. a compromised/spoofing device on
+                # the LAN). Stop here with whatever labels were collected
+                # so far, the same graceful-truncate-on-malformed-data
+                # spirit _iter_mdns_records() already uses, rather than
+                # looping forever - this was a real, reproducible
+                # infinite loop before this guard was added.
+                break
+            seen_pointers.add(offset)
             # Compression pointer: the low 14 bits (of this byte plus the
             # next one) are the offset to jump to for the rest of the name.
             pointer = struct.unpack(">H", message[offset:offset + 2])[0] & 0x3FFF
@@ -3423,9 +3436,9 @@ def main() -> None:
             print(_colorize(f"\n⚠ {len(risky_devices)} device(s) exposing commonly-risky ports:", "yellow", color))
             all_risky_ports = set()
             for d in risky_devices:
-                labels = ", ".join(f"{PORT_SERVICES.get(p, str(p))} ({p})" for p in d["risky_ports"])
+                risky_port_labels = ", ".join(f"{PORT_SERVICES.get(p, str(p))} ({p})" for p in d["risky_ports"])
                 all_risky_ports.update(d["risky_ports"])
-                line = f"  {d['ip']:<20} {d.get('mac') or '-':<20} {labels}"
+                line = f"  {d['ip']:<20} {d.get('mac') or '-':<20} {risky_port_labels}"
                 print(_colorize(line, "red", color))
             print("\nWhy these are flagged:")
             for port in sorted(all_risky_ports):
