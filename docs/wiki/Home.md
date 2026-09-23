@@ -20,6 +20,7 @@ optionally get faster/richer with `scapy`/`psutil` installed.
 | How fast is the LAN itself, not my internet connection? | [[LAN Throughput\|LAN-Throughput]] |
 | Which ports has my router's UPnP quietly opened to the internet? | [[UPnP Audit\|UPnP-Audit]] |
 | Who's home right now, glanceable from a phone browser? | [[Network Dashboard\|Network-Dashboard]] |
+| Same ARP/DHCP watching, but on Windows with no admin rights? | [[Windows ARP/DHCP Watch\|Windows-ARP-DHCP-Watch]] |
 
 New to this repo? Start with [[Getting Started|Getting-Started]].
 
@@ -45,10 +46,10 @@ since they apply (almost) identically to both scripts:
 
 ## Everything else
 
-A dozen standalone scripts each answer one question the scanners don't —
-see the table above, or the sidebar. Every tool prints a plain results
-table to the terminal and most support `--output FILE` to save results as
-JSON or CSV.
+13 standalone scripts each answer one question the scanners don't — see
+the table above, or the sidebar. Every tool prints a plain results table
+to the terminal and most support `--output FILE` to save results as JSON
+or CSV.
 
 ## Design philosophy (why no third-party dependency is ever required)
 

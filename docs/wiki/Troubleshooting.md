@@ -60,6 +60,7 @@ and see each tool's own wiki page for exactly what was and wasn't tested:
 | [[UPnP Audit\|UPnP-Audit]] | A real router's UPnP stack (only a simulated gateway was available) |
 | [[DHCP Monitor\|DHCP-Monitor]] | Real DHCP traffic from a physical network; the entire Windows port-68 bind path |
 | [[Network Scanner\|Network-Scanner]] `--ipv6` | Not supported on Windows at all (by design, not just untested) |
+| [[Windows ARP/DHCP Watch\|Windows-ARP-DHCP-Watch]] | The real `arp.exe`/`ipconfig.exe` output format on an actual Windows install (dev environment is Linux) |
 
 ## MQTT publish fails
 

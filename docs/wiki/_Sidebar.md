@@ -25,6 +25,7 @@
 - [[LAN Throughput|LAN-Throughput]]
 - [[UPnP Audit|UPnP-Audit]]
 - [[Network Dashboard|Network-Dashboard]]
+- [[Windows ARP/DHCP Watch|Windows-ARP-DHCP-Watch]]
 
 **Reference**
 - [[Getting Started|Getting-Started]]
