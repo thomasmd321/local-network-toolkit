@@ -1070,10 +1070,14 @@ Ideas discussed but not yet implemented, for `network_scanner.py` and
       since that part is entirely the *broker's* job per the spec, not
       code in these scripts.
 
-- [ ] **Cut a release tag.** All 26 ideas in this file are checked off as
+- [x] **Cut a release tag.** All 26 ideas in this file are checked off as
       of the MQTT/profiles/metrics/registry-export round - a natural point
       to tag `v1.0.0` (or start a `CHANGELOG.md`) so the project's history
       isn't just a flat commit log for anyone picking this repo up later.
+      Done: published as a GitHub Release at
+      https://github.com/thomasmd321/local-network-toolkit/releases/tag/v1.0.0,
+      tagging `main` at the point where all 15 tools and 935 tests were in
+      place.
 
 - [ ] **Example systemd unit for `--watch` as a service.** Now that both
       `--metrics-file` and `--mqtt-host` exist, the natural next step for
