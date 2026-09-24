@@ -1175,6 +1175,78 @@ worth knowing: a failed mDNS check on `mobile_network_scanner.py` almost
 always means iOS's Local Network Privacy restriction (see
 `mdns_diagnostic.py`), which no retry or code change here can fix.
 
+## Running `--watch` unattended as a systemd service
+
+`--watch SECONDS` already loops on its own, so the natural way to run it
+unattended on an always-on Linux machine is a persistent service (not a
+timer — timers are for something systemd itself invokes periodically,
+which `--watch` doesn't need). Pair it with `--quiet` above and whichever
+of `--metrics-file`/`--mqtt-host`/`--notify-webhook` you're using, so the
+service produces no routine log noise and only reports through those
+channels:
+
+```ini
+# /etc/systemd/system/network-scanner-watch.service
+[Unit]
+Description=Local Network Toolkit - continuous scan (network_scanner.py --watch)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=youruser
+WorkingDirectory=/path/to/local-network-toolkit
+ExecStart=/usr/bin/python3 /path/to/local-network-toolkit/network_scanner.py 192.168.1.0/24 --watch 300 --quiet --metrics-file /var/lib/node_exporter/textfile_collector/network_scanner.prom --mqtt-host localhost --mqtt-password-file /etc/local-network-toolkit/mqtt_password
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```
+sudo systemctl daemon-reload
+sudo systemctl enable --now network-scanner-watch.service
+journalctl -u network-scanner-watch.service -f
+```
+
+Runs as an ordinary user, not root — an ARP scan needs root (or scapy's
+`CAP_NET_RAW`) which a plain user-level unit doesn't have, so it
+transparently takes the ping-sweep + system ARP table fallback described
+above (the same one `--doctor` reports on) instead of failing. Add
+`AmbientCapabilities=CAP_NET_RAW` to `[Service]` if you specifically want
+the faster ARP-based scan without running the whole unit as root —
+standard systemd practice for this, though not something this project's
+own test suite can verify end to end, since that needs a real systemd and
+real raw-socket privileges neither this repo's CI nor its sandboxed dev
+environment has.
+
+[`network_dashboard.py`](#a-live-dashboard-for---watch-network_dashboardpy)
+is a second, independent long-running process — nothing above starts it
+for you — so it wants its own unit alongside it if you're serving the
+dashboard from the same always-on machine:
+
+```ini
+# /etc/systemd/system/network-dashboard.service
+[Unit]
+Description=Local Network Toolkit - live dashboard
+After=network-scanner-watch.service
+
+[Service]
+Type=simple
+User=youruser
+WorkingDirectory=/path/to/local-network-toolkit
+ExecStart=/usr/bin/python3 /path/to/local-network-toolkit/network_dashboard.py --bind 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Leave `--bind` at its default `127.0.0.1` here unless you've deliberately
+read the security notice above about `--bind 0.0.0.0`.
+
 ## Shell tab-completion
 
 `completions.bash` adds bash tab-completion for every script's flag names

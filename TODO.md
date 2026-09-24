@@ -1079,7 +1079,7 @@ Ideas discussed but not yet implemented, for `network_scanner.py` and
       tagging `main` at the point where all 15 tools and 935 tests were in
       place.
 
-- [ ] **Example systemd unit for `--watch` as a service.** Now that both
+- [x] **Example systemd unit for `--watch` as a service.** Now that both
       `--metrics-file` and `--mqtt-host` exist, the natural next step for
       someone using either is running `--watch` unattended on an always-on
       machine rather than in a terminal. A documented example
@@ -1087,6 +1087,16 @@ Ideas discussed but not yet implemented, for `network_scanner.py` and
       --metrics-file ... --mqtt-host ...` one-liner) in the README would
       save that setup work, the same spirit as the shell-completion script
       saving the flag-memorization work.
+      Done: a "Running `--watch` unattended as a systemd service" section
+      in the README (and the wiki's Quiet Mode & Doctor page), with a
+      full example `network-scanner-watch.service` unit (`Type=simple` +
+      `Restart=on-failure`, not a timer, since `--watch` already loops on
+      its own) wired to `--quiet`/`--metrics-file`/`--mqtt-host`, plus a
+      second example unit for `network_dashboard.py` as its own
+      long-running process. Notes the ARP-scan-needs-root/CAP_NET_RAW
+      caveat honestly rather than glossing over it - not verifiable end
+      to end in this project's own CI or sandboxed dev environment, since
+      that needs a real systemd and real raw-socket privileges.
 
 - [x] **ARP/DHCP watching without admin rights, for Windows.**
       `arp_monitor.py` and `network_scanner.py`'s ARP scan both need
