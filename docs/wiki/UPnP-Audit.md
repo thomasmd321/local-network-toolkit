@@ -41,6 +41,13 @@ actual router. Router UPnP stacks are inconsistent about spec compliance
 in ways a simulated one won't reproduce; treat a first real run as the
 verification it hasn't had yet.
 
+**Fixed a real bug**: `parse_port_mapping_response()` used to let a
+non-numeric port field crash the entire audit with an uncaught
+`ValueError` - no caller catches it. Fixed to return `None` instead (this
+function's own existing contract for "no usable mapping here," the same
+as a SOAP fault or unparseable XML), so a real router's own spec
+noncompliance degrades gracefully instead of crashing the script.
+
 ## See also
 
 - [[Exposure Check|Exposure-Check]]

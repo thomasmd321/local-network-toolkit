@@ -34,6 +34,14 @@ Traceroute output varies more between tool versions/distros than most
 formats parsed elsewhere in this project; treat a first real run as the
 verification it hasn't had yet.
 
+**Fixed a real bug**: the Windows `tracert` parser used to abort RTT
+parsing entirely on the first non-numeric token, so a hop reporting
+`<1 ms` (a genuine, successful reply, just too fast to render precisely —
+the standard output for hop 1 and any nearby hop) folded the rest of the
+line, including the actual IP address, into one garbled string. Fixed to
+strip a leading `<` and parse the rest, matching the sibling Unix parser's
+own resilience to an unrecognized token.
+
 ## See also
 
 - [[Exposure Check|Exposure-Check]]

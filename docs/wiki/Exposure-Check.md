@@ -35,6 +35,13 @@ or a third-party online port-checking site you choose yourself) before
 acting on either one. This tool is a cheap first pass, not the final
 word — the CLI itself prints this same caveat after every run.
 
+**Fixed a real bug**: `get_public_ip()` didn't catch
+`http.client.IncompleteRead` (raised when the connection to
+api.ipify.org drops mid-response) - it subclasses `Exception` directly,
+not `OSError`, so it slipped past the existing error handling and crashed
+the script with a raw traceback instead of the intended, clean error
+message every other network failure here produces.
+
 ## See also
 
 - [[UPnP Audit|UPnP-Audit]] — answers *why* a port might be open in the first place

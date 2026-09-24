@@ -26,6 +26,15 @@ back to IP — the same identity rule `network_scanner.py`'s own
 known-devices tracking uses. Output reuses the same green/dim/yellow color
 language as NEW/missing/CHG elsewhere in this project.
 
+**Fixed a real bug**: `diff_devices()` used to compare the *union* of both
+devices' field names instead of the intersection, so diffing a
+`network_scanner.py` export against a `mobile_network_scanner.py` export
+of the exact same, unchanged device — the cross-tool workflow described
+above — reported every schema-only field (`mac`/`vendor` present only on
+one side, `banner` only on the other) as spuriously "changed," burying any
+genuine difference in noise. Fixed to only itemize fields both files
+actually have.
+
 ## See also
 
 - [[Exporting Results & History|Exporting-Results-and-History]]

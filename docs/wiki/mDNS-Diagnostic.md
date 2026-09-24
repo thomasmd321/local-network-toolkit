@@ -20,6 +20,15 @@ terminal app running a script typed at runtime can't do) rather than a bug
 in either script. If you hit the same error, this is the tool to confirm
 it's the platform, not your code or network.
 
+**Fixed a real bug**: Step 5's receive loop used to set a fixed 3.0s
+socket timeout once, outside the loop, instead of recomputing it to
+whatever's actually left of the budget on each pass. A reply arriving late
+in the window (mDNS responders jitter their replies, per RFC 6762) could
+make the script run up to ~6s instead of the "3 seconds" it explicitly
+tells you it's checking - misleading for a tool whose entire purpose is
+timing-isolation diagnosis. Fixed to re-set the timeout to the true
+remaining time on every iteration.
+
 ## See also
 
 - [[Mobile Network Scanner|Mobile-Network-Scanner]]

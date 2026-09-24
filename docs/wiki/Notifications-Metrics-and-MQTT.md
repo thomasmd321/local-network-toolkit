@@ -127,6 +127,15 @@ script itself stops running, instead of silently trusting a state that
 may be hours old. `--mqtt-no-availability` turns this off if you'd rather
 not have it.
 
+**Fixed a real bug**: `publish_mqtt()` used to assume a single `recv(4)`
+call always returned the whole 4-byte CONNACK - never guaranteed by TCP,
+and routinely false under `--mqtt-tls` specifically (`SSLSocket.recv()`
+returns at most one TLS record's worth of data per call). A broker
+sending the CONNACK in two pieces was misreported as "rejected the
+connection," silently dropping the presence publish. Fixed with a small
+loop that reads until the full 4 bytes arrive or the connection closes;
+reproduced the original bug with a real socket before fixing it.
+
 ## See also
 
 - [[Quiet Mode & Doctor|Quiet-Mode-and-Doctor]]
