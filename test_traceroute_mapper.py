@@ -88,6 +88,16 @@ class TestParseWindowsTracert:
         output = "Tracing route to 8.8.8.8 over a maximum of 30 hops\n\nTrace complete.\n"
         assert tm._parse_windows_tracert(output) == []
 
+    def test_sub_millisecond_hop_parses_the_ip_correctly(self):
+        # A real regression test: "<1 ms" (a genuine, successful reply,
+        # just too fast to render precisely) previously made RTT parsing
+        # abort immediately, folding the rest of the line - including the
+        # actual IP - into one garbled string instead.
+        line = "  1    <1 ms    <1 ms    <1 ms  192.168.1.1\n"
+        hops = tm._parse_windows_tracert(line)
+
+        assert hops == [{"hop": 1, "ip": "192.168.1.1", "hostname": "", "rtts_ms": [1.0, 1.0, 1.0]}]
+
     def test_parses_a_full_sample_trace(self):
         output = (
             "Tracing route to 8.8.8.8 over a maximum of 30 hops\n\n"

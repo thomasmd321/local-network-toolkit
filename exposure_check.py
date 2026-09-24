@@ -41,6 +41,7 @@ Usage:
 
 import argparse
 import csv
+import http.client
 import json
 import os
 import socket
@@ -91,7 +92,12 @@ def get_public_ip(timeout: float = 5.0) -> str:
     try:
         with urllib.request.urlopen(_IP_ECHO_URL, timeout=timeout) as response:
             body = response.read().decode("ascii", errors="replace").strip()
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except (urllib.error.URLError, OSError, ValueError, http.client.IncompleteRead) as exc:
+        # http.client.IncompleteRead (the connection closing mid-response)
+        # subclasses Exception directly, not OSError, so it needs its own
+        # entry here - otherwise a dropped connection while reading the
+        # response crashes this with a raw traceback instead of the same
+        # clean RuntimeError every other failure mode here produces.
         raise RuntimeError(f"Couldn't determine your public IP via {_IP_ECHO_URL}: {exc}")
 
     try:

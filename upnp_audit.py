@@ -235,11 +235,13 @@ def _build_soap_request(service_type: str, index: int) -> bytes:
 def parse_port_mapping_response(xml_text: str) -> Optional[PortMapping]:
     """Parse one GetGenericPortMappingEntry SOAP response into a PortMapping.
 
-    Returns None if the response can't be parsed as XML, or has no
-    NewExternalPort field at all - either means there's no mapping here
-    to report (e.g. a SOAP fault body, which callers should have already
-    treated as "stop enumerating" via the HTTP error it usually arrives
-    as - see get_port_mappings()).
+    Returns None if the response can't be parsed as XML, has no
+    NewExternalPort field at all, or that field (or NewInternalPort, if
+    present) isn't actually a number - all three mean there's no usable
+    mapping here to report (e.g. a SOAP fault body, which callers should
+    have already treated as "stop enumerating" via the HTTP error it
+    usually arrives as - see get_port_mappings()), rather than a real
+    router's own spec-noncompliance crashing the whole audit.
     """
     try:
         root = ET.fromstring(xml_text)
@@ -255,10 +257,16 @@ def parse_port_mapping_response(xml_text: str) -> Optional[PortMapping]:
     if "NewExternalPort" not in fields:
         return None
 
+    try:
+        external_port = int(fields["NewExternalPort"])
+        internal_port = int(fields.get("NewInternalPort", 0) or 0)
+    except ValueError:
+        return None
+
     return {
-        "external_port": int(fields["NewExternalPort"]),
+        "external_port": external_port,
         "internal_ip": fields.get("NewInternalClient", ""),
-        "internal_port": int(fields.get("NewInternalPort", 0) or 0),
+        "internal_port": internal_port,
         "protocol": fields.get("NewProtocol", ""),
         "description": fields.get("NewPortMappingDescription", ""),
         "enabled": fields.get("NewEnabled", "0") in ("1", "true", "True"),

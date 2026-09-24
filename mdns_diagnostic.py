@@ -57,10 +57,18 @@ print("Step 5: Do we receive ANYTHING back within 3 seconds?")
 print("  (This should catch replies from EVERY mDNS device on your")
 print("   network, not just Chromecasts - routers, printers, phones,")
 print("   smart TVs, etc. all typically answer this query.)")
-sock.settimeout(3.0)
 received_any = False
 deadline = time.monotonic() + 3.0
-while time.monotonic() < deadline:
+while True:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        break
+    # Re-set the timeout to whatever's actually left of the 3-second
+    # budget on every iteration - a reply arriving late in the window
+    # (mDNS responders jitter their replies, per RFC 6762) would otherwise
+    # let a stale, larger timeout make this run far longer than the "3
+    # seconds" it tells the user it's checking.
+    sock.settimeout(remaining)
     try:
         data, addr = sock.recvfrom(4096)
         print(f"  GOT {len(data)} bytes from {addr}")

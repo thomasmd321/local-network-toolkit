@@ -5,6 +5,7 @@ import socket
 import struct
 import sys
 import threading
+import time
 import urllib.error
 from unittest.mock import MagicMock, patch
 
@@ -1976,6 +1977,63 @@ class TestPublishMqtt:
         assert not (connect_flags & 0x04)
         assert b"availability" not in received["data"]
         assert b"online" not in received["data"]
+
+    def test_a_connack_split_across_two_tcp_segments_is_still_accepted(self):
+        # A real regression test: recv(4) previously assumed a single call
+        # always returns the whole 4-byte CONNACK, which TCP never
+        # guarantees - a broker sending it in two pieces (as this one
+        # deliberately does, with a real delay in between over a real
+        # socket) used to be misreported as "rejected the connection."
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        result = {}
+
+        def serve():
+            conn, _addr = server.accept()
+            conn.recv(4096)  # CONNECT
+            conn.sendall(bytes([0x20, 0x02]))  # First half of the CONNACK.
+            time.sleep(0.05)
+            conn.sendall(bytes([0x00, 0x00]))  # Second half, sent later.
+            try:
+                conn.recv(4096)
+            except OSError:
+                pass
+            conn.close()
+            server.close()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+
+        try:
+            ms.publish_mqtt("127.0.0.1", port, "test-client", [("a/b", b"hello", False)])
+            result["raised"] = False
+        except RuntimeError:
+            result["raised"] = True
+        thread.join(timeout=2)
+
+        assert result["raised"] is False
+
+
+class TestRecvExact:
+    def test_returns_all_bytes_from_a_single_recv_call(self):
+        sock = MagicMock()
+        sock.recv.return_value = b"\x01\x02\x03\x04"
+
+        assert ms._recv_exact(sock, 4) == b"\x01\x02\x03\x04"
+
+    def test_assembles_bytes_delivered_across_several_recv_calls(self):
+        sock = MagicMock()
+        sock.recv.side_effect = [b"\x01", b"\x02\x03", b"\x04"]
+
+        assert ms._recv_exact(sock, 4) == b"\x01\x02\x03\x04"
+
+    def test_returns_a_short_result_when_the_connection_closes_early(self):
+        sock = MagicMock()
+        sock.recv.side_effect = [b"\x01\x02", b""]
+
+        assert ms._recv_exact(sock, 4) == b"\x01\x02"
 
 
 class TestPublishMqttTls:

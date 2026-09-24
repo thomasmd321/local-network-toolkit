@@ -184,6 +184,20 @@ class TestParsePortMappingResponse:
 
         assert mapping["enabled"] is False
 
+    def test_returns_none_instead_of_raising_for_a_non_numeric_external_port(self):
+        # A real regression test: a real router's own spec-noncompliance
+        # (a non-numeric port field) used to crash the whole audit with an
+        # uncaught ValueError instead of being treated as "no usable
+        # mapping here", the same as any other malformed response.
+        xml_text = _MAPPING_RESPONSE_XML.replace("<NewExternalPort>51413</NewExternalPort>", "<NewExternalPort>not-a-number</NewExternalPort>")
+
+        assert ua.parse_port_mapping_response(xml_text) is None
+
+    def test_returns_none_instead_of_raising_for_a_non_numeric_internal_port(self):
+        xml_text = _MAPPING_RESPONSE_XML.replace("<NewInternalPort>51413</NewInternalPort>", "<NewInternalPort>not-a-number</NewInternalPort>")
+
+        assert ua.parse_port_mapping_response(xml_text) is None
+
 
 class TestGetPortMappings:
     def test_stops_at_the_first_http_error(self):

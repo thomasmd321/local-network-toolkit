@@ -1939,6 +1939,26 @@ def _mqtt_publish_packet(topic: str, payload: bytes, retain: bool = False) -> by
 _MQTT_DISCONNECT_PACKET = bytes([0xE0, 0x00])
 
 
+def _recv_exact(sock: socket.socket, n: int) -> bytes:
+    """Read exactly n bytes from sock, looping as needed.
+
+    A single recv() call is never guaranteed to return all n bytes at
+    once, even when the peer sent them together - this is especially
+    common under TLS, where SSLSocket.recv() returns at most one TLS
+    record's worth of plaintext per call, but is just as possible for a
+    plain socket depending on how the OS/network happened to fragment
+    the data. Returns fewer than n bytes only if the connection closed
+    before n bytes arrived.
+    """
+    data = b""
+    while len(data) < n:
+        chunk = sock.recv(n - len(data))
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
 def mqtt_availability_topic(discovery_prefix: str, node_id: str) -> str:
     """The shared topic this client's online/offline status is published to - see publish_mqtt()'s availability_topic."""
     return f"{discovery_prefix}/{node_id}/availability"
@@ -1998,7 +2018,7 @@ def publish_mqtt(
             client_id, username, password,
             will_topic=availability_topic, will_payload=b"offline", will_retain=True,
         ))
-        connack = sock.recv(4)
+        connack = _recv_exact(sock, 4)
         if len(connack) < 4 or connack[0] != 0x20 or connack[3] != 0x00:
             raise RuntimeError(f"MQTT broker rejected the connection (CONNACK: {connack!r})")
         if availability_topic:

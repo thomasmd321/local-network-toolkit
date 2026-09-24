@@ -1,4 +1,5 @@
 import csv
+import http.client
 import json
 import socket
 import threading
@@ -36,6 +37,22 @@ class TestGetPublicIp:
                 assert False, "expected RuntimeError"
             except RuntimeError as exc:
                 assert "isn't an IPv4 address" in str(exc)
+
+    def test_raises_runtime_error_instead_of_crashing_on_incomplete_read(self):
+        # A real regression test: http.client.IncompleteRead (a dropped
+        # connection mid-response) subclasses Exception directly, not
+        # OSError, so it previously wasn't caught here at all and crashed
+        # the whole script with a raw traceback.
+        fake_response = MagicMock()
+        fake_response.read.side_effect = http.client.IncompleteRead(b"20")
+        fake_response.__enter__.return_value = fake_response
+
+        with patch("exposure_check.urllib.request.urlopen", return_value=fake_response):
+            try:
+                ec.get_public_ip(timeout=1.0)
+                assert False, "expected RuntimeError"
+            except RuntimeError as exc:
+                assert "api.ipify.org" in str(exc)
 
 
 class TestCheckPort:

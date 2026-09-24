@@ -149,9 +149,20 @@ def _parse_windows_tracert(output: str) -> List[Hop]:
                 i += 1
                 continue
             try:
-                rtts.append(float(token))
+                # tracert reports a sub-millisecond RTT as "<1" (e.g. "<1
+                # ms") - a real, successful reply, just too fast to render
+                # precisely, unlike "*" above (no reply at all). Stripping
+                # a leading "<" and parsing the rest handles this (and any
+                # future "<N" variant) as the closest honest float value.
+                rtts.append(float(token.lstrip("<")))
             except ValueError:
-                break
+                # An unrecognized token (not a number, not "*") - skip it
+                # and keep parsing the rest of the line, the same
+                # resilience _parse_unix_traceroute's own "*" handling
+                # already has, rather than aborting and folding whatever's
+                # left (including the hop's actual IP) into a garbled mess.
+                i += 1
+                continue
             i += 1
             if i < len(rest) and rest[i] == "ms":
                 i += 1

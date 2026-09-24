@@ -141,6 +141,34 @@ class TestDiffDevices:
 
         assert result["changed"] == []
 
+    def test_an_identical_device_across_the_two_scripts_own_schemas_is_not_reported(self):
+        # A real regression test: comparing a network_scanner.py export
+        # (mac/vendor, no banner) against a mobile_network_scanner.py
+        # export (banner, no mac/vendor) of the *same, unchanged* device
+        # previously reported every schema-only field difference as a
+        # spurious "change" (banner: None -> "", vendor: "" -> None),
+        # since this used to union the two devices' fields instead of
+        # intersecting them - exactly the cross-tool workflow this
+        # module's own docstring advertises as supported.
+        desktop_device = {"ip": "192.168.1.50", "hostname": "printer.local", "vendor": "", "port": 631, "risky_ports": []}
+        mobile_device = {"ip": "192.168.1.50", "hostname": "printer.local", "port": 631, "banner": "", "risky_ports": []}
+
+        result = sd.diff_devices([desktop_device], [mobile_device])
+
+        assert result["changed"] == []
+
+    def test_a_real_change_still_reported_when_schemas_differ(self):
+        # The intersection-only comparison above must not also hide a
+        # genuine change in a field both sides actually share.
+        desktop_device = {"ip": "192.168.1.50", "hostname": "printer.local", "vendor": "", "port": 631, "risky_ports": []}
+        mobile_device = {"ip": "192.168.1.50", "hostname": "printer.local", "port": 80, "banner": "", "risky_ports": []}
+
+        result = sd.diff_devices([desktop_device], [mobile_device])
+
+        assert result["changed"] == [
+            {"key": "192.168.1.50", "ip": "192.168.1.50", "changes": {"port": (631, 80)}}
+        ]
+
     def test_results_are_sorted_by_ip(self):
         old = []
         new = [

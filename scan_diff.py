@@ -131,9 +131,17 @@ def diff_devices(old_devices: List[dict], new_devices: List[dict]) -> Dict[str, 
     changed = []
     for key in sorted(set(old_by_key) & set(new_by_key)):
         old_device, new_device = old_by_key[key], new_by_key[key]
-        # "ip" is excluded here since it's shown as this row's label
-        # already, not itemized as a field-level change.
-        fields = sorted((set(old_device) | set(new_device)) - {"ip"})
+        # Intersection, not union: a field only one side's file even has
+        # (mac/vendor from network_scanner.py, banner from
+        # mobile_network_scanner.py) is never itemized as "changed" just
+        # because the other side lacks the key entirely - see this
+        # module's own docstring ("compared too, whenever both files
+        # happen to have them"). Comparing the union instead would report
+        # every single device as changed whenever the two files come from
+        # different scripts, since one side is always missing the other's
+        # exclusive fields. "ip" is also excluded, since it's shown as
+        # this row's label already, not itemized as a field-level change.
+        fields = sorted((set(old_device) & set(new_device)) - {"ip"})
         changes = {
             field: (old_device.get(field), new_device.get(field))
             for field in fields
